@@ -1,0 +1,268 @@
+---
+title: "Cleaning and quality control structural-mri data table"
+author: "Yue Wang and Narun P"
+date:  "`r format(Sys.time(), '%d %b, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    number_sections: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## This analysis uses ABCD Release 3
+starting with setting up library and script/data folders
+
+```{r}
+rm(list=ls())
+
+library(tidyverse)
+
+
+
+datafolder = "/media/Data/ABCD/ABCD4/ABCD4SQL/"
+scriptfold = "/media/Data/Yue script/"
+NDAfold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+utilFold = "/media/Data/ABCD/ABCD3/Analysis/utilFunc/"
+studyNDAFold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+outputfolder = "/media/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+featurefolder = "/media/Data/ABCD/ABCD4/Analysis/ManipulatedData/"
+
+
+```
+
+
+
+## Load data
+
+```{r}
+
+sMRIAsegAparc1 <-as_tibble(read.csv(paste0(datafolder,"ABCD_SMRIP10201_DATA_TABLE.csv"))) 
+sMRIAsegAparc2 <-as_tibble(read.csv(paste0(datafolder,"ABCD_SMRIP20201_DATA_TABLE.csv"))) 
+
+MRIsMRIDest1 <-as_tibble(read.csv(paste0(datafolder,"ABCD_MRISDP10201_DATA_TABLE.csv")))
+MRIsMRIDest2 <-as_tibble(read.csv(paste0(datafolder,"ABCD_MRISDP20201_DATA_TABLE.csv"))) 
+## there is ABCD 4.0 file, QC according to the ABCD 4.0 instructions
+
+QCsMRI <-tibble::as_tibble(read.table(paste0(studyNDAFold,"abcd_imgincl01.txt"),header=TRUE)) 
+
+QCsMRI <- QCsMRI[-1,]##remove the line that explaines the variables
+QCsMRI <- QCsMRI%>%
+  rename(SUBJECTKEY=subjectkey,EVENTNAME=eventname,IMGINCL_T1W_INCLUDE=imgincl_t1w_include)%>%
+  select(SUBJECTKEY, EVENTNAME, IMGINCL_T1W_INCLUDE)
+
+QCsMRI %>% count(EVENTNAME,IMGINCL_T1W_INCLUDE)
+```
+
+
+join data 
+```{r}
+
+Screen <- plyr::join_all(list(sMRIAsegAparc1, sMRIAsegAparc2, MRIsMRIDest1, MRIsMRIDest2,QCsMRI), by=c("SUBJECTKEY", 'EVENTNAME'), type='full')
+
+screenUniq <- Screen[,!duplicated(colnames(Screen))]
+
+screenUniqRowID <- tibble::rowid_to_column(screenUniq, "ID")
+
+```
+
+only include data that IMGINCL_T1W_INCLUDE from ABCD_IMGINCL01_DATA_TABLE.csv
+
+```{r}
+
+screenQCExcluded <- screenUniqRowID %>%
+  filter(IMGINCL_T1W_INCLUDE == 1) %>% 
+  select(-IMGINCL_T1W_INCLUDE)
+  
+nrow(screenUniqRowID)
+nrow(screenQCExcluded)
+```
+
+Load dict and change names
+
+```{r}
+
+#load the readable names based on dictionary
+sMRIVarNames<-tbl_df(readxl::read_excel(paste0(utilFold,"sMRIVariableToImport.xlsx"))) %>% 
+  select(original, CondReadableFilteredGgseg) %>% drop_na(CondReadableFilteredGgseg)
+
+sMRIVarNames$CondReadableFilteredGgseg[1:19] <- paste0("Vol_",sMRIVarNames$CondReadableFilteredGgseg[1:19])
+
+
+
+
+#change the names
+sMRI.DictNames <- screenQCExcluded
+for (sMRIVar in 1:nrow(sMRIVarNames)) {
+  sMRI.DictNames <- sMRI.DictNames %>%
+  rename(!!sMRIVarNames$CondReadableFilteredGgseg[sMRIVar] := !!sMRIVarNames$original[sMRIVar])  
+}
+
+
+###Destrieux ROI 
+
+
+### change names of sulcal depth
+
+
+roi_names <- sMRIVarNames$CondReadableFilteredGgseg[174:321]%>%
+            str_remove_all("Dest_Area_")
+
+
+sulcal_depth_roi_names <- paste0("Dest_Sulcal_Depth_", roi_names)
+
+sulcal_depth_tibble <- sMRI.DictNames %>%
+                       select(all_of(paste0("MRISDP_", seq(from =152, to = 299, by = 1))))
+
+
+names(sulcal_depth_tibble) <- sulcal_depth_roi_names
+
+
+## average T1 intensity white matter 
+
+avg_T1_white_roi_names <- paste0("Avg_T1_White_", roi_names)
+
+avg_T1_white_tibble <- sMRI.DictNames %>%
+                       select(all_of(paste0("MRISDP_", seq(from =605, to = 752, by = 1))))
+
+
+names(avg_T1_white_tibble) <- avg_T1_white_roi_names
+
+
+## average T1 intensity gray matter 
+
+avg_T1_gray_roi_names <- paste0("Avg_T1_Gray_", roi_names)
+
+avg_T1_Gray_tibble <- sMRI.DictNames %>%
+                       select(all_of(paste0("MRISDP_", seq(from =756, to = 903, by = 1))))
+
+
+names(avg_T1_Gray_tibble) <- avg_T1_gray_roi_names
+
+
+### normalised T1 intensity 
+
+
+nom_T1_roi_names <- paste0("Normalised_T1_", roi_names)
+
+nom_T1_tibble <- sMRI.DictNames %>%
+                       select(all_of(paste0("MRISDP_", seq(from =907, to = 1054, by = 1))))
+
+
+names(nom_T1_tibble) <- nom_T1_roi_names
+
+
+### change names of ASEG rois
+
+aseg_roi_names <- sMRIVarNames$CondReadableFilteredGgseg[1:19]%>%
+            str_remove_all("ASEG_")
+
+
+aseg_original_names <- sMRIVarNames$original[1:19]%>% 
+                       str_remove_all("SMRI_VOL_SCS_")
+                      
+avg_T1_aseg_roi_names <- paste0("Avg_T1_ASEG_", aseg_roi_names)
+
+aseg_original_roi_names <- paste0("SMRI_T1W_SCS_", aseg_original_names)
+
+T1sMRIVarNames <- tibble(original = aseg_original_roi_names,CondReadableFilteredGgseg= avg_T1_aseg_roi_names)
+
+
+### Average intensity of the normalized T2-weighted image 
+
+
+
+avg_T1_aseg_tibble <- screenQCExcluded %>%
+                       select(starts_with("SMRI_T1W_SCS_"))
+
+
+#change the names
+avg_T1_aseg_tibble_newnames <- avg_T1_aseg_tibble
+for (sMRIVar in 1:nrow(T1sMRIVarNames)) {
+  avg_T1_aseg_tibble_newnames <- avg_T1_aseg_tibble_newnames %>%
+  rename(!!T1sMRIVarNames$CondReadableFilteredGgseg[sMRIVar] := !!T1sMRIVarNames$original[sMRIVar])  
+}
+
+
+avg_T1_aseg_tibble_newnames <- avg_T1_aseg_tibble_newnames%>%
+                               select(starts_with("Avg_T1_ASEG_"))
+  
+
+```
+
+prefix "ASEG_" = ASEG volume -> needed to be scaled by "intracranialVol"  
+prefix "Dest_Thick_" = Destrieux Thickness -> needed to be scaled by "meanThickDest"  
+prefix "Dest_Area_" = Destrieux Area -> needed to be scaled by "totalAreaDest"  
+prefix "Dest_Vol_" = Destrieux volume -> needed to be scaled by "totalVolDest"
+
+```{r}
+sMRI.DictNamesWeightedVarimportant <- sMRI.DictNames %>% 
+  mutate_at(vars(starts_with("Vol_ASEG_")),  ~ . / subcorticalGrayVol) %>% 
+  mutate_at(vars(starts_with("Dest_Thick_")),  ~ . / meanThickDest) %>%
+  mutate_at(vars(starts_with("Dest_Area_")),  ~ . / totalAreaDest) %>%
+  mutate_at(vars(starts_with("Dest_Vol_")), ~. / totalVolDest) %>%
+  select(SUBJECTKEY, EVENTNAME, starts_with("Vol_ASEG_"), starts_with("Dest_Thick_"), starts_with("Dest_Area_"),  starts_with("Dest_Vol_")) 
+
+
+
+whole_Cerebellum_Cortex <- screenQCExcluded%>% select(all_of(c("SMRI_T1W_SCS_CRBCORTEXLH","SMRI_T1W_SCS_CRBCORTEXRH")))%>%
+                  rowSums()
+
+mean_vars <- screenQCExcluded%>%
+            select(all_of(c("MRISDP_453","MRISDP_604","MRISDP_151","MRISDP_302",
+                            "MRISDP_755","MRISDP_906","MRISDP_1057",
+                            "SMRI_VOL_SCS_SUBCORTICALGV")))%>%
+            rename(Dest_total_area=MRISDP_453)%>%
+            rename(Dest_total_volumn=MRISDP_604)%>%
+            rename(Dest_mean_thickness=MRISDP_151)%>%
+            rename(Dest_mean_sulcal_depth=MRISDP_302)%>%
+            rename(mean_T1_Avg_white=MRISDP_755)%>%
+            rename(mean_T1_Avg_gray=MRISDP_906)%>%
+            rename(mean_T1_normalised=MRISDP_1057)%>%
+            rename(subcorticalgrayvolume=SMRI_VOL_SCS_SUBCORTICALGV)%>%
+            mutate(Avg_T1_whole_Cerebellum_Cortex_ASEG =whole_Cerebellum_Cortex)
+
+
+
+
+
+sMRI.T1Weighted <-do.call("cbind", list(sMRI.DictNamesWeightedVarimportant, 
+                                        mean_vars, 
+                                        sulcal_depth_tibble,
+                                        avg_T1_white_tibble,
+                                        avg_T1_Gray_tibble,
+                                        nom_T1_tibble,
+                                        avg_T1_aseg_tibble_newnames))
+
+
+sMRI.T1Weighted <-sMRI.T1Weighted %>%
+  mutate_at(vars(starts_with("Avg_T1_White_")),  ~ . / mean_T1_Avg_white)%>%
+  mutate_at(vars(starts_with("Avg_T1_Gray_")),  ~ . / mean_T1_Avg_gray) %>%
+  mutate_at(vars(starts_with("Normalised_T1_")),  ~ . / mean_T1_normalised) %>%
+  mutate_at(vars(starts_with("Dest_Sulcal_Depth_")),  ~ . / Dest_mean_sulcal_depth)%>%
+  mutate_at(vars(starts_with("Dest_Sulcal_Depth_")),  ~ . / Dest_mean_sulcal_depth) %>%
+  mutate_at(vars(starts_with("Avg_T1_ASEG_")),  ~ . /Avg_T1_whole_Cerebellum_Cortex_ASEG)   
+
+
+
+contrast_vec_cortical <- sMRI.T1Weighted%>% select(ends_with("lh_G_and_S_frontomargin"))%>%
+                         colnames()%>%
+                         print
+
+contrast_vec_sub_cortical<- sMRI.T1Weighted%>% select(ends_with("Left-Cerebellum-Cortex"))%>%
+                         colnames()%>%
+                         print
+```
+for real analysis, perhaps start with "ASEG_" and "Dest_Thick_" 
+
+write on file
+```{r}
+write.csv(sMRI.T1Weighted, paste0(featurefolder,"sMRI.T1Weighted.csv"))
+```
+
+

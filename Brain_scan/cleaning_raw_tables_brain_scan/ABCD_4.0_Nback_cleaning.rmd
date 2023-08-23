@@ -1,0 +1,243 @@
+---
+title: "ABCD 4.0 data Nback cleaning"
+author: "Yue Wang and Narun P"
+date:  "`r format(Sys.time(), '%d %b, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    number_sections: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r load_data, echo=FALSE}
+rm(list = ls(all.names = TRUE)) #will clear all objects includes hidden objects.
+gc() #free up memory and report the memory usage.
+```
+
+## Note
+Here we the ABCD release 4.0 data-set
+
+## Loading libraries
+The following libraries and default settings were used during the analysis:
+
+
+```{r load_libraries}
+options(scipen = 999)
+
+library(tidyverse)
+library("tidymodels")
+##parallel map
+
+theme_set(theme_bw() + theme(panel.grid = element_blank()))
+## parallel processing number of cores register
+all_cores <- parallel::detectCores(logical = FALSE) - 2
+```
+
+# Data Preparation
+
+
+We first loaded all of the relevant data files (not shown here as they refer to local directories):
+
+```{r loading_data, echo=FALSE}
+# from Qnap data windows
+#datafolder = "//np-qnapa/Data/ABCD/ABCD4/ABCD4SQL/"
+#scriptfold = "//np-qnapa/Data/Yue script/"
+#NDAfold = "//np-qnapa/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#utilFold = "//np-qnapa/Data/ABCD/ABCD3/Analysis/utilFunc/"
+#studyNDAFold = "//np-qnapa/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#outputfolder = "//np-qnapa/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+
+
+
+datafolder = "/media/Data/ABCD/ABCD4/ABCD4SQL/"
+scriptfold = "/media/Data/Yue script/"
+NDAfold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+utilFold = "/media/Data/ABCD/ABCD3/Analysis/utilFunc/"
+studyNDAFold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+outputfolder = "/media/Data/ABCD/ABCD4/Analysis/ManipulatedData/"
+
+```
+
+## load all of the files
+
+The aim is to compute the following:  
+
+ 
+```{r load_data2}
+
+###loading site and scanner information
+MRIinfo <-tibble::as_tibble(read.csv(paste0(datafolder, "ABCD_MRI01_DATA_TABLE.csv"))) 
+Siteinfo <-tibble::as_tibble(read.csv(paste0(datafolder, "ABCD_LT01_DATA_TABLE.csv")))
+MriandSite <- left_join(MRIinfo,Siteinfo, by=c('SUBJECTKEY','EVENTNAME'))
+MRIinfo  %>% count(EVENTNAME,SEX)
+  
+###loading response variables
+NIH_TB <-tibble::as_tibble(read.csv(paste0(datafolder,"ABCD_TBSS01_DATA_TABLE.csv"))) 
+LittleMan <-tibble::as_tibble(read.csv(paste0(datafolder,"LMTP201_DATA_TABLE.csv"))) 
+Pearson <-tibble::as_tibble(read.csv(paste0(datafolder,"ABCD_PS01_DATA_TABLE.csv"))) 
+NBackBeh <- tibble::as_tibble(read.csv(paste0(datafolder, "ABCD_MRINBACK02_DATA_TABLE.csv")) ) 
+Pearsonscores <- tibble::as_tibble(read.csv(paste0(datafolder, "ABCD_PS01_DATA_TABLE.csv")) ) 
+
+
+
+###loading brain scan data (Nback only)
+NBackAsegAPac.Beta <-tibble::as_tibble(read.csv(paste0(datafolder,"NBACK_BWROI02_DATA_TABLE.csv"))) 
+NBackDest1.Beta <-tibble::as_tibble(read.csv(paste0(datafolder,"ABCD_TFABWDP101_DATA_TABLE.csv"))) 
+NBackDest2.Beta <-tibble::as_tibble(read.csv(paste0(datafolder,"ABCD_TFABWDP201_DATA_TABLE.csv"))) 
+### Note that we have not removed NA before Enet tuning to keep the most number of participants
+
+short_names <- tibble::as_tibble(read.csv(paste0(scriptfold,"ShortNames_all.csv") ))
+
+### load vision scan data, according to the documents some of the participants cannot see the IPad screen
+vision_idx <- tibble::as_tibble(read.table(paste0(NDAfold, "abcd_svs01.txt"),header = TRUE))
+
+
+```
+
+
+## processing Nback data
+
+
+
+
+
+#### Prep Aseg data
+make the contrast Aseg readable, remove ROIs with white matter and ventricle 
+
+```{r}
+#load the readable names based on dictionary
+AName<-tbl_df(readxl::read_excel(paste0(utilFold,"NbackAsegApracName_201.xlsx")))
+AConDictNames <- AName %>% select("AConOriginal","AConReadable")
+
+NBackAsegAPac.DictNames <- NBackAsegAPac.Beta 
+for (AConROI in 1:nrow(AConDictNames)) {
+  NBackAsegAPac.DictNames  <- NBackAsegAPac.DictNames   %>%
+  rename(!!AConDictNames$AConReadable[AConROI] := !!AConDictNames$AConOriginal[AConROI])  
+}
+
+#only include Aseg
+NBackAseg.DictNames <-NBackAsegAPac.DictNames[1:290]
+
+#take the NBackAseg and look at its prefixes for contrast names
+NBackAseg.ConNames <- NBackAseg.DictNames  %>%
+  select(ends_with("putamenlh")) %>%
+  rename_all(~sub('putamenlh', '', .)) %>%
+  colnames()
+
+#take out ventricle and white matter, leaving 19 areas
+ROI.FS <- NBackAseg.DictNamesTrimmed <- list()
+
+for (conFSNum in 1:length(NBackAseg.ConNames)) {
+  ROI.FS[conFSNum][[1]] <- NBackAseg.DictNames  %>%  select(contains(NBackAseg.ConNames[conFSNum])) %>% 
+    select(c(5:9, 12:14, 16:17, 22:30)) %>% colnames()
+  NBackAseg.DictNamesTrimmed[conFSNum][[1]]  <- NBackAseg.DictNames  %>% 
+    select('SUBJECTKEY', 'EVENTNAME', ROI.FS[conFSNum][[1]]) 
+}
+NBackAseg.DictNamesTrimmedReduced <- 
+  NBackAseg.DictNamesTrimmed %>% reduce(left_join, by = c("SUBJECTKEY", 'EVENTNAME'))
+
+#load the roi names used in ggseg
+asegNBacktoGGSeg3d<-tbl_df(read.csv(paste0(utilFold,"asegMIDNBacktoGGSeg3d_19.csv")))
+
+#change the roi names 
+NBackAseg.GgsegNamesTrimmedReduced <- NBackAseg.DictNamesTrimmedReduced
+for (asegROI in 1:nrow(asegNBacktoGGSeg3d)) {
+  NBackAseg.GgsegNamesTrimmedReduced <- NBackAseg.GgsegNamesTrimmedReduced  %>%
+  rename_all(~sub(asegNBacktoGGSeg3d$NBACK[asegROI], 
+                  paste0("ROI_",asegNBacktoGGSeg3d$ggseg3d[asegROI]), .))
+}
+
+```
+
+
+#### Prep Dest data
+1) change the col names to the names in Dict
+2) change the ROI names used in Dict to ggseg3d rois for plotting
+
+```{r}
+
+#load the readable names based on dictionary
+DestName<-tbl_df(readxl::read_excel(paste0(utilFold,"NBACKDestName_201.xlsx")))
+DestConDictNames <- DestName %>% select("DestConOriginal","DestConReadable")
+
+NBackDest.Beta <- plyr::join_all(list(NBackDest1.Beta, NBackDest2.Beta), by= c("SUBJECTKEY", 'EVENTNAME'), type='left')
+NBackDest.BetaUniq <- NBackDest.Beta[,!duplicated(colnames(NBackDest.Beta))]
+
+NBackDest.DictNames <- NBackDest.BetaUniq
+for (DestConROI in 1:nrow(DestConDictNames)) {
+  NBackDest.DictNames <- NBackDest.DictNames  %>%
+  rename(!!DestConDictNames$DestConReadable[DestConROI] := !!DestConDictNames$DestConOriginal[DestConROI])  
+}
+
+NBackDestConDictNames<- NBackDest.DictNames  %>%
+ select(ends_with("gandsfrontomarginlh")) %>%
+ rename_all(~sub('gandsfrontomarginlh', '', .)) %>%
+ colnames()
+
+#turns out Dest used the same cont name with Aseg
+#NBackAseg.ConNames == NBackDestConDictNames
+
+NBackDest.DictRoi<- NBackDest.DictNames  %>%
+ select(starts_with("0back_")) %>%
+ rename_all(~sub('0back_', '', .)) %>%
+ colnames()
+
+#turns out Nback used the same Dest  name with MID
+
+#load the roi names used in ggseg
+dictMIDtoGGSeg3d <-tbl_df(read.csv(paste0(utilFold,"dictMIDtoGGSeg3d.csv")))
+#change the roi names 
+NBackDest.GGSeg3dNames<- NBackDest.DictNames
+for (DestROI in 1:nrow(dictMIDtoGGSeg3d )) {
+  NBackDest.GGSeg3dNames <- NBackDest.GGSeg3dNames  %>%
+ #windows
+    # rename_all(~sub(dictMIDtoGGSeg3d$ï..MID[DestROI], paste0("ROI_",dictMIDtoGGSeg3d$ggseg3d[DestROI]), .))
+#linux
+    rename_all(~sub(dictMIDtoGGSeg3d$MID[DestROI], paste0("ROI_",dictMIDtoGGSeg3d$ggseg3d[DestROI]), .))
+  }
+
+```
+
+### Join Aseg and Dest together and export a file
+```{r}
+NBackDestAseg<- plyr::join_all(list(NBackAseg.GgsegNamesTrimmedReduced, NBackDest.GGSeg3dNames), by=c("SUBJECTKEY", 'EVENTNAME'), type='left')
+NBackDestAseg <- NBackDestAseg[,!duplicated(colnames(NBackDestAseg))]
+```
+
+### testing QC based on the "one" variable
+IMGINCL_NBACK_INCLUDE from ABCD_IMGINCL01_DATA_TABLE.csv
+
+and provide an example of QCed data
+```{r}
+
+## there is ABCD 4.0 file, QC according to the ABCD 4.0 instructions
+
+RecQCNBACK <-tibble::as_tibble(read.table(paste0(studyNDAFold,"abcd_imgincl01.txt"),header=TRUE)) 
+
+RecQCNBACK <- RecQCNBACK[-1,]##remove the line that explaines the variables
+RecQCNBACK <- RecQCNBACK%>%
+  rename(SUBJECTKEY=subjectkey,EVENTNAME=eventname,IMGINCL_NBACK_INCLUDE=imgincl_nback_include)%>%
+  select(SUBJECTKEY, EVENTNAME, IMGINCL_NBACK_INCLUDE)
+
+RecQCNBACK%>% count(EVENTNAME,IMGINCL_NBACK_INCLUDE)
+
+NBackDestAsegQCed <- plyr::join_all(list(NBackDestAseg, RecQCNBACK), by=c("SUBJECTKEY", 'EVENTNAME'), type='left') %>%
+  filter(IMGINCL_NBACK_INCLUDE == 1) %>% select(-IMGINCL_NBACK_INCLUDE)
+
+```
+
+
+
+
+```{r}
+
+write.csv(NBackDestAsegQCed, paste0(outputfolder,"NBackDestAsegQCed.csv" ))
+
+```

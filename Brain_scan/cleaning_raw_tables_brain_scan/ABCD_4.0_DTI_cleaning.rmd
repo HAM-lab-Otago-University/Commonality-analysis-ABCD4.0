@@ -1,0 +1,102 @@
+---
+title: "Cleaning and quality control DTI data table"
+author: "Yue Wang and Narun P"
+date:  "`r format(Sys.time(), '%d %b, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    number_sections: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## This analysis uses ABCD Release 4
+starting with setting up library and script/data folders
+
+```{r}
+rm(list=ls())
+
+library(tidyverse)
+
+
+datafolder = "/media/Data/ABCD/ABCD4/ABCD4SQL/"
+scriptfold = "/media/Data/Yue script/"
+NDAfold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+utilFold = "/media/Data/ABCD/ABCD3/Analysis/utilFunc/"
+studyNDAFold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+outputfolder = "/media/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+featurefolder = "/media/Data/ABCD/ABCD4/Analysis/ManipulatedData/"
+```
+
+
+
+## Load data
+
+```{r}
+
+DTIFull1 <-as_tibble(read.csv(paste0(datafolder,"ABCD_DMDTIFP101_DATA_TABLE.csv"))) 
+## there is ABCD 4.0 file, QC according to the ABCD 4.0 instructions
+QCsMRI <-tibble::as_tibble(read.table(paste0(studyNDAFold,"abcd_imgincl01.txt"),header=TRUE)) 
+
+QCsMRI <- QCsMRI[-1,]##remove the line that explaines the variables
+QCsMRI <- QCsMRI%>%
+  rename(SUBJECTKEY=subjectkey,EVENTNAME=eventname,IMGINCL_DMRI_INCLUDE=imgincl_dmri_include)%>%
+  select(SUBJECTKEY, EVENTNAME, IMGINCL_DMRI_INCLUDE)
+
+QCsMRI %>% count(EVENTNAME,IMGINCL_DMRI_INCLUDE)
+```
+
+### join data 
+```{r}
+
+Screen <- plyr::join_all(list(DTIFull1, QCsMRI), by=c("SUBJECTKEY", 'EVENTNAME'), type='full')
+
+screenUniq <- Screen[,!duplicated(colnames(Screen))]
+
+screenUniqRowID <- tibble::rowid_to_column(screenUniq, "ID")
+
+```
+
+### only include data that IMGINCL_DMRI_INCLUDE from ABCD_IMGINCL01_DATA_TABLE.csv
+
+```{r}
+
+screenQCExcluded <- screenUniqRowID %>%
+  filter(IMGINCL_DMRI_INCLUDE == 1) %>% 
+  select(-IMGINCL_DMRI_INCLUDE)
+  
+nrow(screenUniqRowID)
+nrow(screenQCExcluded)
+```
+
+### Load dict and change names and select only the FA of the 23 tracks 
+
+```{r}
+
+#load the readable names based on dictionary
+DTIVarNames<-tbl_df(readxl::read_excel(paste0(utilFold,"DTIVariableToImport.xlsx"))) %>% 
+  select(UpperOriginal, Readable23HaglerTracks) %>% drop_na(Readable23HaglerTracks)
+
+#change the names
+DTI.DictNames <- screenQCExcluded
+for (DTIVar in 1:nrow(DTIVarNames)) {
+  DTI.DictNames <- DTI.DictNames %>%
+  rename(!!DTIVarNames$Readable23HaglerTracks[DTIVar] := !!DTIVarNames$UpperOriginal[DTIVar])
+}
+
+# only focus on the 23 tracks in Haggler 2009 Atlas
+DTI.23Tracks <- DTI.DictNames %>% select(-starts_with("DMDTIFP"))
+
+```
+
+### write on file
+```{r}
+write.csv(DTI.23Tracks, paste0(featurefolder,"DTI_FA23Tracks.csv"))
+```
+
+

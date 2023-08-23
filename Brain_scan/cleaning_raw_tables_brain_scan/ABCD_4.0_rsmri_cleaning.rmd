@@ -1,0 +1,392 @@
+---
+title: "Cleaning and quality control rs-mri data table"
+author: "Yue Wang and Narun P"
+date:  "`r format(Sys.time(), '%d %b, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    number_sections: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## This analysis uses ABCD Release 4
+starting with setting up library and script/data folders
+
+# Setting up environments
+
+```{r}
+rm(list=ls())
+
+library(tidyverse)
+
+##linux
+#datafolder = "/media/Data/ABCD/ABCD4/ABCD4SQL/"
+#scriptfold = "/media/Data/Yue script/"
+#NDAfold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#utilFold = "/media/Data/ABCD/ABCD3/Analysis/utilFunc/"
+#studyNDAFold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#outputfolder = "/media/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+#featurefolder = "/media/Data/ABCD/ABCD4/Analysis/ManipulatedData/"
+
+datafolder = "/Volumes/Data/ABCD/ABCD4/ABCD4SQL/"
+scriptfold = "/Volumes/Data/Yue script/"
+NDAfold = "/Volumes/Data/ABCD/ABCD4/ABCDStudyNDA/"
+utilFold = "/Volumes/Data/ABCD/ABCD3/Analysis/utilFunc/"
+studyNDAFold = "/Volumes/Data/ABCD/ABCD4/ABCDStudyNDA/"
+outputfolder = "/Volumes/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+featurefolder = "/Volumes/Data/ABCD/ABCD4/Analysis/ManipulatedData/"
+```
+
+# Processing data
+
+## Load data
+
+```{r}
+
+MRIRSBetNetCOR <-tibble::as_tibble(read.csv(paste0(datafolder,"ABCD_BETNET02_DATA_TABLE.csv")))
+
+MRIRSSubNetCOR  <- tibble::as_tibble(read.csv(paste0(datafolder,"MRIRSCOR02_DATA_TABLE.csv")))
+
+## there is ABCD 4.0 file, QC according to the ABCD 4.0 instructions
+
+QCMRIRS <-tibble::as_tibble(read.table(paste0(studyNDAFold,"abcd_imgincl01.txt"),header=TRUE)) 
+
+QCMRIRS <- QCMRIRS[-1,]##remove the line that explaines the variables
+QCMRIRS <- QCMRIRS%>%
+  rename(SUBJECTKEY=subjectkey,EVENTNAME=eventname,IMGINCL_RSFMRI_INCLUDE=imgincl_rsfmri_include)%>%
+  select(SUBJECTKEY, EVENTNAME, IMGINCL_RSFMRI_INCLUDE)
+
+QCMRIRS  %>% count(EVENTNAME,IMGINCL_RSFMRI_INCLUDE)
+```
+
+
+## join data 
+
+```{r}
+
+Screen <- plyr::join_all(list(MRIRSSubNetCOR, MRIRSBetNetCOR, QCMRIRS ), by= c("SUBJECTKEY", "EVENTNAME"), type='full')
+
+screenUniq <- Screen[,!duplicated(colnames(Screen))]
+
+screenUniqRowID <- tibble::rowid_to_column(screenUniq, "ID")
+
+```
+
+obtain the cor names 
+```{r}
+
+#22 = "RSFMRI_COR_NGD_AU_SCS_CRCXLH" 
+#268 = "RSFMRI_COR_NGD_VS_SCS_VTDCRH"
+MRIRSSubNetCOR.name <- colnames(MRIRSSubNetCOR)[22:268] 
+#22 = "RSFM_AUDITORY_TO_AUDITORY" 
+#190 = "RSFMRI_C_NGD_VS_NGD_VS"
+MRIRSBetNetCOR.name <- colnames(MRIRSBetNetCOR)[22:190] 
+
+```
+
+only include data that 1) no incidental finding 2) passed QC for rsfMRI for at least 4 runs, 3) passed QC for T1, 4) had at least data points worth of 1 run left 375.
+6995 passed the QC
+
+```{r}
+
+screenQCExcluded <- screenUniqRowID %>%
+  filter(IMGINCL_RSFMRI_INCLUDE == 1) %>% 
+  select(-IMGINCL_RSFMRI_INCLUDE)
+  
+nrow(screenUniqRowID)
+nrow(screenQCExcluded)
+```
+
+2_year_follow_up_y_arm_1	5024			
+baseline_year_1_arm_1	9373	
+of subNet don't have NA
+```{r}
+ MRIRSSubNetCOR <-screenQCExcluded %>% select(all_of(MRIRSSubNetCOR.name), SUBJECTKEY,EVENTNAME) %>%    tibble::rowid_to_column("IDCol") %>% column_to_rownames("IDCol") %>% drop_na 
+
+ MRIRSSubNetCOR %>% count(EVENTNAME)
+
+```
+
+```{r}
+
+
+SubNetNameChanged <- function(RSSubNet){
+RSSubNet <- RSSubNet %>% rename_all(.funs = funs(sub("RSFMRI_COR*", "", names(RSSubNet)))) 
+RSSubNet <- RSSubNet %>%
+  rename_at(.vars = vars(contains("_NGD_AU")),.funs = funs(sub("_NGD_AU", "Auditory", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_CERC")),.funs = funs(sub("_NGD_CERC", "CinguloOpercular", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_COPA")),.funs = funs(sub("_NGD_COPA", "CinguloParietal", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_DF")),.funs = funs(sub("_NGD_DF", "Default", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_DSA")),.funs = funs(sub("_NGD_DSA", "DorsalAttention", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_FOPA")),.funs = funs(sub("_NGD_FOPA", "FrontoParietal", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_NONE")),.funs = funs(sub("_NGD_NONE", "None", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_RST")),.funs = funs(sub("_NGD_RST", "RetrosplenialTemporal", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_SMH")),.funs = funs(sub("_NGD_SMH", "SensorimotorHand", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_SMM")),.funs = funs(sub("_NGD_SMM", "SensorimotorMouth", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_SA")),.funs = funs(sub("_NGD_SA", "Salience", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_VTA")),.funs = funs(sub("_NGD_VTA", "VentralAttention", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_VS")),.funs = funs(sub("_NGD_VS", "Visual", .))) %>%
+  rename_at(.vars = vars(contains("_SCS_CRCXLH")),.funs = funs(sub("_SCS_CRCXLH", "LeftCerebellumCortex", .))) %>%
+  rename_at(.vars = vars(contains("_SCS_THPLH")),.funs = funs(sub("_SCS_THPLH", "LeftThalamusProper", .))) %>%
+  rename_at(.vars = vars(contains("_SCS_CDELH")),.funs = funs(sub("_SCS_CDELH", "LeftCaudate", .))) %>%
+  rename_at(.vars = vars(contains("_SCS_PTLH")),.funs = funs(sub("_SCS_PTLH", "LeftPutamen", .))) %>%
+  rename_at(.vars = vars(contains("_SCS_PLLH")),.funs = funs(sub("_SCS_PLLH", "LeftPallidum", .))) %>%
+  rename_at(.vars = vars(contains("_SCS_BS")),.funs = funs(sub("_SCS_BS", "BrainStem", .))) %>%
+  rename_at(.vars = vars(contains("_SCS_HPLH")),.funs = funs(sub("_SCS_HPLH", "LeftHippocampus", .))) %>%
+  rename_at(.vars = vars(contains("_SCS_AGLH")),.funs = funs(sub("_SCS_AGLH", "LeftAmygdala", .))) %>%
+  rename_at(.vars = vars(contains("_SCS_AALH")),.funs = funs(sub("_SCS_AALH", "LeftAccumbensArea", .))) %>%
+  rename_at(.vars = vars(contains("_SCS_VTDCLH")),.funs = funs(sub("_SCS_VTDCLH", "LeftVentraldc", .))) %>%
+  rename_at(.vars = vars(contains("_SCS_CRCXRH")),.funs = funs(sub("_SCS_CRCXRH", "RightCerebellumCortex", .))) %>%
+  rename_at(.vars = vars(contains("_SCS_THPRH")),.funs = funs(sub("_SCS_THPRH", "RightThalamusProper", .))) %>%
+  rename_at(.vars = vars(contains("_SCS_CDERH")),.funs = funs(sub("_SCS_CDERH", "RightCaudate", .))) %>%
+  rename_at(.vars = vars(contains("_SCS_PTRH")),.funs = funs(sub("_SCS_PTRH", "RightPutamen", .))) %>%
+  rename_at(.vars = vars(contains("_SCS_PLRH")),.funs = funs(sub("_SCS_PLRH", "RightPallidum", .))) %>%
+  rename_at(.vars = vars(contains("_SCS_HPRH")),.funs = funs(sub("_SCS_HPRH", "RightHippocampus", .))) %>%
+  rename_at(.vars = vars(contains("_SCS_AGRH")),.funs = funs(sub("_SCS_AGRH", "RightAmygdala", .))) %>%
+  rename_at(.vars = vars(contains("_SCS_AARH")),.funs = funs(sub("_SCS_AARH", "RightAccumbensArea", .))) %>%
+  rename_at(.vars = vars(contains("_SCS_VTDCRH")),.funs = funs(sub("_SCS_VTDCRH", "RightVentraldc", .))) 
+return(RSSubNet)
+}
+
+RSSubNet.NoCOMBATedNamed <-SubNetNameChanged(MRIRSSubNetCOR)
+#RSSubNet.COMBATedNamed <-SubNetNameChanged(MRIRSSubNetCOR.combattedSub)
+
+
+```
+
+2_year_follow_up_y_arm_1	5022			
+baseline_year_1_arm_1	9373	
+of BetNet don't have NA
+
+```{r}
+
+#one level "HASHe3ce02d3" doesn't have data but it's not been dropped yet
+MRIRSBetNetCOR <-screenQCExcluded %>% select(MRIRSBetNetCOR.name, SUBJECTKEY,EVENTNAME) %>% 
+  tibble::rowid_to_column("IDCol") %>% column_to_rownames("IDCol") %>% drop_na 
+
+MRIRSBetNetCOR %>% count(EVENTNAME)
+
+```
+
+
+```{r}
+
+BetNetNameChanged <- function(RSBetNet){
+RSBetNet <- RSBetNet %>%
+  rename_at(.vars = vars(contains("_NGD_AD")),.funs = funs(sub("_NGD_AD", "Auditory", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_CGC")),.funs = funs(sub("_NGD_CGC", "CinguloOpercular", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_CA")),.funs = funs(sub("_NGD_CA", "CinguloParietal", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_DT")),.funs = funs(sub("_NGD_DT", "Default", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_DLA")),.funs = funs(sub("_NGD_DLA", "DorsalAttention", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_FO")),.funs = funs(sub("_NGD_FO", "FrontoParietal", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_N")),.funs = funs(sub("_NGD_N", "None", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_RSPLTP")),.funs = funs(sub("_NGD_RSPLTP", "RetrosplenialTemporal", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_SMH")),.funs = funs(sub("_NGD_SMH", "SensorimotorHand", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_SMM")),.funs = funs(sub("_NGD_SMM", "SensorimotorMouth", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_SA")),.funs = funs(sub("_NGD_SA", "Salience", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_VTA")),.funs = funs(sub("_NGD_VTA", "VentralAttention", .))) %>%
+  rename_at(.vars = vars(contains("_NGD_VS")),.funs = funs(sub("_NGD_VS", "Visual", .))) %>%
+  rename(WithinAuditory = Auditory_NGD_AD) %>%  
+  rename(WithinCinguloOpercula = CinguloOpercular_NGD_CGC) %>%
+  rename(WithinCinguloParietal = CinguloParietal_NGD_CA) %>%
+  rename(WithinDefault = Default_NGD_DT) %>%
+  rename(WithinDorsalAttention = DorsalAttention_NGD_DLA) %>%
+  rename(WithinFrontoParietal = FrontoParietal_NGD_FO) %>%
+  rename(WithinNone = None_NGD_N) %>%
+  rename(WithinRetrosplenialTemporal = RetrosplenialTemporal_NGD_RSPLTP) %>%
+  rename(WithinSensorimotorHand = SensorimotorHand_NGD_SMH) %>%
+  rename(WithinSensorimotorMouth = SensorimotorMouth_NGD_SMM ) %>%
+  rename(WithinSalience = Salience_NGD_SA) %>%
+  rename(WithinVentralAttention = VentralAttention_NGD_VTA) %>%
+  rename(WithinVisual = Visual_NGD_VS)
+return(RSBetNet)
+}
+
+BetNetAvgAdded  <- function(RSBetNet){
+RSBetNet <- RSBetNet %>%
+  mutate(avgAuditoryCinguloOpercular = rowMeans(cbind(AuditoryCinguloOpercular , CinguloOpercularAuditory), na.rm = T)) %>%
+  mutate(avgAuditoryCinguloParietal = rowMeans(cbind(AuditoryCinguloParietal , CinguloParietalAuditory), na.rm = T)) %>%
+  mutate(avgAuditoryDefault = rowMeans(cbind(AuditoryDefault , DefaultAuditory), na.rm = T)) %>%
+  mutate(avgAuditoryDorsalAttention = rowMeans(cbind(AuditoryDorsalAttention , DorsalAttentionAuditory), na.rm = T)) %>%
+  mutate(avgAuditoryFrontoParietal = rowMeans(cbind(AuditoryFrontoParietal , FrontoParietalAuditory), na.rm = T)) %>%
+  mutate(avgAuditoryNone = rowMeans(cbind(AuditoryNone , NoneAuditory), na.rm = T)) %>%
+  mutate(avgAuditoryRetrosplenialTemporal = rowMeans(cbind(AuditoryRetrosplenialTemporal , RetrosplenialTemporalAuditory), na.rm = T)) %>%
+  mutate(avgAuditorySensorimotorHand = rowMeans(cbind(AuditorySensorimotorHand , SensorimotorHandAuditory), na.rm = T)) %>%
+  mutate(avgAuditorySensorimotorMouth = rowMeans(cbind(AuditorySensorimotorMouth , SensorimotorMouthAuditory), na.rm = T)) %>%
+  mutate(avgAuditorySalience = rowMeans(cbind(AuditorySalience , SalienceAuditory), na.rm = T)) %>%
+  mutate(avgAuditoryVentralAttention = rowMeans(cbind(AuditoryVentralAttention , VentralAttentionAuditory), na.rm = T)) %>%
+  mutate(avgAuditoryVisual = rowMeans(cbind(AuditoryVisual , VisualAuditory), na.rm = T)) %>%
+  mutate(avgCinguloOpercularCinguloParietal = rowMeans(cbind(CinguloOpercularCinguloParietal , CinguloParietalCinguloOpercular), na.rm = T)) %>%
+  mutate(avgCinguloOpercularDefault = rowMeans(cbind(CinguloOpercularDefault , DefaultCinguloOpercular), na.rm = T)) %>%
+  mutate(avgCinguloOpercularDorsalAttention = rowMeans(cbind(CinguloOpercularDorsalAttention , DorsalAttentionCinguloOpercular), na.rm = T)) %>%
+  mutate(avgCinguloOpercularFrontoParietal = rowMeans(cbind(CinguloOpercularFrontoParietal , FrontoParietalCinguloOpercular), na.rm = T)) %>%
+  mutate(avgCinguloOpercularNone = rowMeans(cbind(CinguloOpercularNone , NoneCinguloOpercular), na.rm = T)) %>%
+  mutate(avgCinguloOpercularRetrosplenialTemporal = rowMeans(cbind(CinguloOpercularRetrosplenialTemporal , RetrosplenialTemporalCinguloOpercular), na.rm = T)) %>%
+  mutate(avgCinguloOpercularSensorimotorHand = rowMeans(cbind(CinguloOpercularSensorimotorHand , SensorimotorHandCinguloOpercular), na.rm = T)) %>%
+  mutate(avgCinguloOpercularSensorimotorMouth = rowMeans(cbind(CinguloOpercularSensorimotorMouth , SensorimotorMouthCinguloOpercular), na.rm = T)) %>%
+  mutate(avgCinguloOpercularSalience = rowMeans(cbind(CinguloOpercularSalience , SalienceCinguloOpercular), na.rm = T)) %>%
+  mutate(avgCinguloOpercularVentralAttention = rowMeans(cbind(CinguloOpercularVentralAttention , VentralAttentionCinguloOpercular), na.rm = T)) %>%
+  mutate(avgCinguloOpercularVisual = rowMeans(cbind(CinguloOpercularVisual , VisualCinguloOpercular), na.rm = T)) %>%
+  mutate(avgCinguloParietalDefault = rowMeans(cbind(CinguloParietalDefault , DefaultCinguloParietal), na.rm = T)) %>%
+  mutate(avgCinguloParietalDorsalAttention = rowMeans(cbind(CinguloParietalDorsalAttention , DorsalAttentionCinguloParietal), na.rm = T)) %>%
+  mutate(avgCinguloParietalFrontoParietal = rowMeans(cbind(CinguloParietalFrontoParietal , FrontoParietalCinguloParietal), na.rm = T)) %>%
+  mutate(avgCinguloParietalNone = rowMeans(cbind(CinguloParietalNone , NoneCinguloParietal), na.rm = T)) %>%
+  mutate(avgCinguloParietalRetrosplenialTemporal = rowMeans(cbind(CinguloParietalRetrosplenialTemporal , RetrosplenialTemporalCinguloParietal), na.rm = T)) %>%
+  mutate(avgCinguloParietalSensorimotorHand = rowMeans(cbind(CinguloParietalSensorimotorHand , SensorimotorHandCinguloParietal), na.rm = T)) %>%
+  mutate(avgCinguloParietalSensorimotorMouth = rowMeans(cbind(CinguloParietalSensorimotorMouth , SensorimotorMouthCinguloParietal), na.rm = T)) %>%
+  mutate(avgCinguloParietalSalience = rowMeans(cbind(CinguloParietalSalience , SalienceCinguloParietal), na.rm = T)) %>%
+  mutate(avgCinguloParietalVentralAttention = rowMeans(cbind(CinguloParietalVentralAttention , VentralAttentionCinguloParietal), na.rm = T)) %>%
+  mutate(avgCinguloParietalVisual = rowMeans(cbind(CinguloParietalVisual , VisualCinguloParietal), na.rm = T)) %>%
+  mutate(avgDefaultDorsalAttention = rowMeans(cbind(DefaultDorsalAttention , DorsalAttentionDefault), na.rm = T)) %>%
+  mutate(avgDefaultFrontoParietal = rowMeans(cbind(DefaultFrontoParietal , FrontoParietalDefault), na.rm = T)) %>%
+  mutate(avgDefaultNone = rowMeans(cbind(DefaultNone , NoneDefault), na.rm = T)) %>%
+  mutate(avgDefaultRetrosplenialTemporal = rowMeans(cbind(DefaultRetrosplenialTemporal , RetrosplenialTemporalDefault), na.rm = T)) %>%
+  mutate(avgDefaultSensorimotorHand = rowMeans(cbind(DefaultSensorimotorHand , SensorimotorHandDefault), na.rm = T)) %>%
+  mutate(avgDefaultSensorimotorMouth = rowMeans(cbind(DefaultSensorimotorMouth , SensorimotorMouthDefault), na.rm = T)) %>%
+  mutate(avgDefaultSalience = rowMeans(cbind(DefaultSalience , SalienceDefault), na.rm = T)) %>%
+  mutate(avgDefaultVentralAttention = rowMeans(cbind(DefaultVentralAttention , VentralAttentionDefault), na.rm = T)) %>%
+  mutate(avgDefaultVisual = rowMeans(cbind(DefaultVisual , VisualDefault), na.rm = T)) %>%
+  mutate(avgDorsalAttentionFrontoParietal = rowMeans(cbind(DorsalAttentionFrontoParietal , FrontoParietalDorsalAttention), na.rm = T)) %>%
+  mutate(avgDorsalAttentionNone = rowMeans(cbind(DorsalAttentionNone , NoneDorsalAttention), na.rm = T)) %>%
+  mutate(avgDorsalAttentionRetrosplenialTemporal = rowMeans(cbind(DorsalAttentionRetrosplenialTemporal , RetrosplenialTemporalDorsalAttention), na.rm = T)) %>%
+  mutate(avgDorsalAttentionSensorimotorHand = rowMeans(cbind(DorsalAttentionSensorimotorHand , SensorimotorHandDorsalAttention), na.rm = T)) %>%
+  mutate(avgDorsalAttentionSensorimotorMouth = rowMeans(cbind(DorsalAttentionSensorimotorMouth , SensorimotorMouthDorsalAttention), na.rm = T)) %>%
+  mutate(avgDorsalAttentionSalience = rowMeans(cbind(DorsalAttentionSalience , SalienceDorsalAttention), na.rm = T)) %>%
+  mutate(avgDorsalAttentionVentralAttention = rowMeans(cbind(DorsalAttentionVentralAttention , VentralAttentionDorsalAttention), na.rm = T)) %>%
+  mutate(avgDorsalAttentionVisual = rowMeans(cbind(DorsalAttentionVisual , VisualDorsalAttention), na.rm = T)) %>%
+  mutate(avgFrontoParietalNone = rowMeans(cbind(FrontoParietalNone , NoneFrontoParietal), na.rm = T)) %>%
+  mutate(avgFrontoParietalRetrosplenialTemporal = rowMeans(cbind(FrontoParietalRetrosplenialTemporal , RetrosplenialTemporalFrontoParietal), na.rm = T)) %>%
+  mutate(avgFrontoParietalSensorimotorHand = rowMeans(cbind(FrontoParietalSensorimotorHand , SensorimotorHandFrontoParietal), na.rm = T)) %>%
+  mutate(avgFrontoParietalSensorimotorMouth = rowMeans(cbind(FrontoParietalSensorimotorMouth , SensorimotorMouthFrontoParietal), na.rm = T)) %>%
+  mutate(avgFrontoParietalSalience = rowMeans(cbind(FrontoParietalSalience , SalienceFrontoParietal), na.rm = T)) %>%
+  mutate(avgFrontoParietalVentralAttention = rowMeans(cbind(FrontoParietalVentralAttention , VentralAttentionFrontoParietal), na.rm = T)) %>%
+  mutate(avgFrontoParietalVisual = rowMeans(cbind(FrontoParietalVisual , VisualFrontoParietal), na.rm = T)) %>%
+  mutate(avgNoneRetrosplenialTemporal = rowMeans(cbind(NoneRetrosplenialTemporal , RetrosplenialTemporalNone), na.rm = T)) %>%
+  mutate(avgNoneSensorimotorHand = rowMeans(cbind(NoneSensorimotorHand , SensorimotorHandNone), na.rm = T)) %>%
+  mutate(avgNoneSensorimotorMouth = rowMeans(cbind(NoneSensorimotorMouth , SensorimotorMouthNone), na.rm = T)) %>%
+  mutate(avgNoneSalience = rowMeans(cbind(NoneSalience , SalienceNone), na.rm = T)) %>%
+  mutate(avgNoneVentralAttention = rowMeans(cbind(NoneVentralAttention , VentralAttentionNone), na.rm = T)) %>%
+  mutate(avgNoneVisual = rowMeans(cbind(NoneVisual , VisualNone), na.rm = T)) %>%
+  mutate(avgRetrosplenialTemporalSensorimotorHand = rowMeans(cbind(RetrosplenialTemporalSensorimotorHand , SensorimotorHandRetrosplenialTemporal), na.rm = T)) %>%
+  mutate(avgRetrosplenialTemporalSensorimotorMouth = rowMeans(cbind(RetrosplenialTemporalSensorimotorMouth , SensorimotorMouthRetrosplenialTemporal), na.rm = T)) %>%
+  mutate(avgRetrosplenialTemporalSalience = rowMeans(cbind(RetrosplenialTemporalSalience , SalienceRetrosplenialTemporal), na.rm = T)) %>%
+  mutate(avgRetrosplenialTemporalVentralAttention = rowMeans(cbind(RetrosplenialTemporalVentralAttention , VentralAttentionRetrosplenialTemporal), na.rm = T)) %>%
+  mutate(avgRetrosplenialTemporalVisual = rowMeans(cbind(RetrosplenialTemporalVisual , VisualRetrosplenialTemporal), na.rm = T)) %>%
+  mutate(avgSensorimotorHandSensorimotorMouth = rowMeans(cbind(SensorimotorHandSensorimotorMouth , SensorimotorMouthSensorimotorHand), na.rm = T)) %>%
+  mutate(avgSensorimotorHandSalience = rowMeans(cbind(SensorimotorHandSalience , SalienceSensorimotorHand), na.rm = T)) %>%
+  mutate(avgSensorimotorHandVentralAttention = rowMeans(cbind(SensorimotorHandVentralAttention , VentralAttentionSensorimotorHand), na.rm = T)) %>%
+  mutate(avgSensorimotorHandVisual = rowMeans(cbind(SensorimotorHandVisual , VisualSensorimotorHand), na.rm = T)) %>%
+  mutate(avgSensorimotorMouthSalience = rowMeans(cbind(SensorimotorMouthSalience , SalienceSensorimotorMouth), na.rm = T)) %>%
+  mutate(avgSensorimotorMouthVentralAttention = rowMeans(cbind(SensorimotorMouthVentralAttention , VentralAttentionSensorimotorMouth), na.rm = T)) %>%
+  mutate(avgSensorimotorMouthVisual = rowMeans(cbind(SensorimotorMouthVisual , VisualSensorimotorMouth), na.rm = T)) %>%
+  mutate(avgSalienceVentralAttention = rowMeans(cbind(SalienceVentralAttention , VentralAttentionSalience), na.rm = T)) %>%
+  mutate(avgSalienceVisual = rowMeans(cbind(SalienceVisual , VisualSalience), na.rm = T)) %>%
+  mutate(avgVentralAttentionVisual = rowMeans(cbind(VentralAttentionVisual , VisualVentralAttention), na.rm = T))
+return(RSBetNet)
+}
+
+#load data and covert to tbl
+RSBetNet.NoCOMBATed <- MRIRSBetNetCOR %>% rename_all(.funs = funs(sub("RSFMRI_C*", "", names(MRIRSBetNetCOR)))) 
+
+RSBetNet.NoCOMBATedNamed <-BetNetNameChanged(RSBetNet.NoCOMBATed)
+
+RSBetNet.NoCOMBATedNamedAvgAdded <-BetNetAvgAdded(RSBetNet.NoCOMBATedNamed)
+
+RSBetNet.NoCOMBATedNamedAvgAddedNoDup <- RSBetNet.NoCOMBATedNamedAvgAdded %>% 
+  select(contains("Within"), contains("avg"), SUBJECTKEY, EVENTNAME)
+
+
+```
+
+```{r}
+
+ write_excel_csv(RSSubNet.NoCOMBATedNamed, file.path(featurefolder, "RSSubNetExcludedNoCOMBATedABCD4.csv"))
+
+ write_excel_csv(RSBetNet.NoCOMBATedNamedAvgAddedNoDup, file.path(featurefolder, "RSBetNetExcludedNoCOMBATABCD4.csv"))
+
+```
+
+## ABCD rsfMRI Temporal Variance
+
+```{r}
+
+MRIRSTV02 <-tibble::as_tibble(read.csv(paste0(datafolder,"ABCD_MRIRSTV02_DATA_TABLE.csv")))
+
+
+gordan_names <-tibble::as_tibble(read.table(paste0(featurefolder,"Gordon333_Key.txt"), header  = TRUE))
+
+```
+
+change the variable names of Gordon network
+
+```{r}
+gordan_var <- MRIRSTV02 %>% select(starts_with("rsfmri_var_cortgordon_gp"))
+
+gordan_name_order <- gordan_names %>% select("Gordon_Parcel", "Network_Parcel")%>%
+                                      arrange(Gordon_Parcel)
+
+
+new_names_vec <- paste0("rsmri_var_gordon_ROI_",gordan_name_order$Network_Parcel)
+
+
+names(gordan_var) <- new_names_vec
+```
+
+change the names of ASEG
+
+```{r}
+aseg_var <- MRIRSTV02 %>% select(starts_with("rsfmri_var_scs_"))
+
+
+asegNBacktoGGSeg3d<-tbl_df(read.csv(paste0(utilFold,"asegMIDNBacktoGGSeg3d_19.csv")))
+
+aseg_names_vec <- colnames(aseg_var)%>%
+                  str_remove_all("RSFMRI_VAR_SCS_")
+
+
+aseg_var_trail <- aseg_var
+
+names(aseg_var_trail) <- aseg_names_vec
+
+aseg_var_trail <- aseg_var_trail%>% rename('rsmri_var_aseg_ROI_Left-Cerebellum-Cortex' = CRBCORTEXLH )%>%
+                                    rename('rsmri_var_aseg_ROI_Left-Thalamus-Proper' = TPLH  )%>%                                                              rename('rsmri_var_aseg_ROI_Left-Caudate' = CAUDATELH    )%>%
+                                    rename('rsmri_var_aseg_ROI_Left-Putamen' = PUTAMENLH)%>%
+                                    rename('rsmri_var_aseg_ROI_Left-Pallidum' = PALLIDUMLH)%>%                                                                 rename('rsmri_var_aseg_ROI_Brain-Stem' = BRAINSTEM)%>% 
+                                    rename('rsmri_var_aseg_ROI_Left-Hippocampus' =HPUSLH)%>%                                                                   rename('rsmri_var_aseg_ROI_Left-Amygdala' = AMYGDALALH )%>%
+                                    rename('rsmri_var_aseg_ROI_Left-Accumbens-area' = AALH )%>%
+                                    rename('rsmri_var_aseg_ROI_Left-VentralDC' = VENTRALDCLH)%>%      
+                                    rename('rsmri_var_aseg_ROI_Right-Cerebellum-Cortex' = CRBCORTEXRH)%>%
+                                    rename('rsmri_var_aseg_ROI_Right-Thalamus-Proper' = TPRH )%>%
+                                    rename('rsmri_var_aseg_ROI_Right-Caudate' = CAUDATERH  )%>%              
+                                    rename('rsmri_var_aseg_ROI_Right-Putamen' = PUTAMENRH  )%>%
+                                    rename('rsmri_var_aseg_ROI_Right-Pallidum' = PALLIDUMRH )%>%
+                                    rename('rsmri_var_aseg_ROI_Right-Hippocampus' = HPUSRH  )%>%      
+                                    rename('rsmri_var_aseg_ROI_Right-Amygdala' = AMYGDALARH  )  %>%                                                            rename('rsmri_var_aseg_ROI_Right-Accumbens-area' = AARH)%>%           
+                                    rename('rsmri_var_aseg_ROI_Right-VentralDC' =   VENTRALDCRH)         
+ 
+
+aseg_var_select <- aseg_var_trail %>%
+                   select(starts_with("rsmri_var_aseg_ROI_"))
+                                                                                            
+```
+
+```{r}
+
+id_vars <- MRIRSTV02 %>% select(-starts_with("RSFMRI_"))
+
+
+rsmri_var_tibble <- bind_cols(id_vars,gordan_var,aseg_var_select)
+```
+
+```{r,eval=FALSE}
+
+ write_excel_csv(rsmri_var_tibble, file.path(featurefolder, "rsmri_variance_gordon_aseg.csv"))
+
+
+```

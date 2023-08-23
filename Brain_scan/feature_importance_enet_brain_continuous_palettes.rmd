@@ -1,0 +1,2122 @@
+---
+title: "Elastic Net Feature importance of Cognitive Abilities ~ each brain modality for baseline and follow-up"
+author: "Yue Wang and Narun P"
+date:  "`r format(Sys.time(), '%d %b, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    number_sections: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+options(scipen = 999)
+```
+# Setting up the environment
+
+## Reset workspace and load libraries  
+This analysis uses ABCD Release 4.0
+
+```{r , results='hide', message=FALSE, warning=FALSE}
+rm(list=ls())
+gc()
+```
+
+```{r , results='hide', message=FALSE, warning=FALSE}
+library(tidyverse)
+library(qgraph)
+library(pander)
+library(summarytools)
+library(sjPlot)
+library(sjmisc)
+library(sjlabelled)
+library(tidymodels)
+library(knitr)
+library(extrafont)
+## for poisson class of elastic net
+library(poissonreg)
+library("sva")
+library(ggtext)
+library(ggpubr)
+library(cowplot)
+### brain plotting libraries
+library(ggseg)
+library(ggsegExtra)
+library(ggsegDesterieux)
+library(ggsegJHU)
+library(ggsegGordon)
+library("pals")
+```
+
+
+## Setting up paths
+
+```{r, cache=FALSE, include=FALSE}
+### ubuntu and windows directories
+#ABCD3Fold <- '/Volumes/wd/ABCD3/'
+#ABCD3Fold <-"~/OneDrive - University of Otago/ABCD3/"
+#ABCD4Fold <-"/media/Data/ABCD/ABCD4/"
+#ABCD3Fold <-"/media/Data/ABCD/ABCD3/"
+#scriptfold = "/media/Data/Yue script/"
+#utilFold = "/media/Data/ABCD/ABCD3/Analysis/utilFunc/"
+
+# mac directories
+ABCD4Fold <-"/Volumes/Data/ABCD/ABCD4/"
+ABCD3Fold <-"/Volumes/Data/ABCD/ABCD3/"
+scriptfold = "/Volumes/Data/Yue script/"
+utilFold = "/Volumes/Data/ABCD/ABCD3/Analysis/utilFunc/"
+
+#ABCD4Fold <- "//np-qnapa/Data/ABCD/ABCD4/"
+#setwd(paste0(ABCD3Fold, "Analysis/CognitionP"))
+dataFold <- paste0(ABCD4Fold, "ABCD4SQL/")
+utilFold <- paste0(ABCD3Fold, "Analysis/utilFunc/")
+
+gene_fold <- paste0(ABCD4Fold, "RicPGS/RicFIles20_Feb_2022/abcd-release-3.0_chrall_0.8-mac5-hg19-eur-qc-v9/")
+
+```
+
+Load up functions
+
+
+```{r}
+source(paste0(scriptfold,"stacking_gfactor_modelling/r_functions.R"))
+
+```
+
+Set up parallel
+
+```{r}
+# parallel for ubuntu
+doParallel::registerDoParallel(cores=15)  
+
+## this one works for ubuntu but slow
+#library(doFuture)
+#registerDoFuture()
+#plan(multicore(workers = 30))
+
+### parallel for windows
+
+#library(doFuture)
+#registerDoFuture()
+#plan(multisession(workers = 30))
+```
+
+
+Loading in feature names for the DTI modality.
+
+```{r}
+HaglerToJhu <- read_csv(paste0(utilFold, "HaglerToJhu.csv"))
+```
+
+Specify names vector
+
+```{r}
+modality_names=c("DTI_data","rsmri_within_avg_data","smri_T2_mean_total_data","smri_T1_mean_total_data","Normalised_T2_","Avg_T2_Gray_","Avg_T2_White_","Normalised_T1_","Avg_T1_Gray_","Avg_T1_White_","Dest_Sulcal_Depth_","Dest_Vol_","Dest_Area_","Dest_Thick_","Vol_ASEG_","Avg_T2_ASEG_","Avg_T1_ASEG_Vol_","rsmri_gordon_aseg_data","incorrectgovsincorrectstop_ROI_","incorrectgovscorrectgo_ROI_","correctstopvsincorrectstop_ROI_","anystopvscorrectgo_ROI_","incorrectstopvscorrectgo_ROI_","correctstopvscorrectgo_ROI_","correctgovsfixation_ROI_","antiLargeLossVsSmallLoss_ROI_","antiSmallLossVsNeu_ROI_","antiLargeLossVsNeu_ROI_","antiLargeRewVsSmallRew_ROI_","antiSmallRewVsNeu_ROI_","antiLargeRewVsNeu_ROI_","feedPunPosVsNeg_ROI_","feedRewPosVsNeg_ROI_","antiLosVsNeu_ROI_","antiRewVsNeu_ROI_","posfacevsneutface_ROI_","negfacevsneutface_ROI_","facevsplace_ROI_","emotionvsneutface_ROI_","X2backvs0back_ROI_","emotion_ROI_","place_ROI_","X2back_ROI_","X0back_ROI_","rsmri_subnet") 
+
+subj_info <- c("SUBJECTKEY","SITE_ID_L","EVENTNAME")
+
+```
+
+
+# Process the elastic net model output
+
+Loading 45 brain scan modalities.
+
+This can be done with a map function or individually. The code of loading in the enet outputs can be clumsy. However, for the computers with not a really large RAM it is suggested.
+
+Processing individual modalities and save the outputs.
+
+The following function mainly extracts the model fit coefficients of the model fit objects as well as save the data tables. Special cares are taken to make sure that the site in the output is the right one.
+
+## Output processing function
+
+```{r}
+coef_extract <- function(list_input){
+baseline_enet_pred <- map(list_input,"baseline_train_pred")
+baseline_enet_pred_fit <- map(baseline_enet_pred,"model_final_fit")
+baseline_enet_pred_fit_param <- map(baseline_enet_pred_fit,~parsnip::tidy(.))
+train_baseline_data <- map(list_input,"train_baseline_data")
+test_baseline_data <- map(list_input,"test_baseline_data")
+
+
+followup_enet_pred <- map(list_input,"followup_train_pred")
+followup_enet_pred_fit <- map(followup_enet_pred,"model_final_fit")
+followup_enet_pred_fit_param <- map(followup_enet_pred_fit,~parsnip::tidy(.))
+train_followup_data <- map(list_input,"train_followup_data")
+test_followup_data <- map(list_input,"test_followup_data")
+
+
+output_list <- list(baseline_coefs = baseline_enet_pred_fit_param,
+                    followup_coefs = followup_enet_pred_fit_param,
+                    train_baseline_data=train_baseline_data,
+                    test_baseline_data=test_baseline_data,
+                    train_followup_data=train_followup_data,
+                    test_followup_data=test_followup_data)  
+return(output_list)
+}
+
+
+
+```
+
+
+## Loading up modelling fitting outputs
+
+The process is done one by one.
+
+Thoes files are loaded from the collected elastic model fit output. The output is computed by Nesi code.
+
+```{r,eval=FALSE}
+rsmri_within_avg_data <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/rsmri_within_avg_data",".enet_results.RDS"))
+rsmri_within_avg_coef <- coef_extract(list_input = rsmri_within_avg_data)
+saveRDS(rsmri_within_avg_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/rsmri_within_avg_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+smri_T2_mean_total_data <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/smri_T2_mean_total_data",".enet_results.RDS"))
+smri_T2_mean_total_coef <- coef_extract(list_input = smri_T2_mean_total_data)
+saveRDS(smri_T2_mean_total_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/smri_T2_mean_total_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+smri_T1_mean_total_data <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/smri_T1_mean_total_data",".enet_results.RDS"))
+smri_T1_mean_total_coef <- coef_extract(list_input = smri_T1_mean_total_data)
+saveRDS(smri_T1_mean_total_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/smri_T1_mean_total_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+Normalised_T2_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/Normalised_T2_",".enet_results.RDS"))
+Normalised_T2_coef <- coef_extract(list_input = Normalised_T2_)
+saveRDS(Normalised_T2_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/Normalised_T2_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+Avg_T2_Gray_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/Avg_T2_Gray_",".enet_results.RDS"))
+Avg_T2_Gray_coef <- coef_extract(list_input = Avg_T2_Gray_)
+saveRDS(Avg_T2_Gray_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/Avg_T2_Gray_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+Avg_T2_White_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/Avg_T2_White_",".enet_results.RDS"))
+Avg_T2_White_coef <- coef_extract(list_input = Avg_T2_White_)
+saveRDS(Avg_T2_White_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/Avg_T2_White_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+Normalised_T1_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/Normalised_T1_",".enet_results.RDS"))
+Normalised_T1_coef <- coef_extract(list_input = Normalised_T1_)
+saveRDS(Normalised_T1_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/Normalised_T1_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+Avg_T1_Gray_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/Avg_T1_Gray_",".enet_results.RDS"))
+Avg_T1_Gray_coef <- coef_extract(list_input = Avg_T1_Gray_)
+saveRDS(Avg_T1_Gray_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/Avg_T1_Gray_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+Avg_T1_White_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/Avg_T1_White_",".enet_results.RDS"))
+Avg_T1_White_coef <- coef_extract(list_input = Avg_T1_White_)
+saveRDS(Avg_T1_White_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/Avg_T1_White_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+Dest_Sulcal_Depth_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/Dest_Sulcal_Depth_",".enet_results.RDS"))
+Dest_Sulcal_Depth_coef <- coef_extract(list_input = Dest_Sulcal_Depth_)
+saveRDS(Dest_Sulcal_Depth_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/Dest_Sulcal_Depth_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+Dest_Vol_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/Dest_Vol_",".enet_results.RDS"))
+Dest_Vol_coef <- coef_extract(list_input = Dest_Vol_)
+saveRDS(Dest_Vol_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/Dest_Vol_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+Dest_Area_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/Dest_Area_",".enet_results.RDS"))
+Dest_Area_coef <- coef_extract(list_input = Dest_Area_)
+saveRDS(Dest_Area_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/Dest_Area_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+Dest_Thick_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/Dest_Thick_",".enet_results.RDS"))
+Dest_Thick_coef <- coef_extract(list_input = Dest_Thick_)
+saveRDS(Dest_Thick_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/Dest_Thick_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+Vol_ASEG_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/Vol_ASEG_",".enet_results.RDS"))
+Vol_ASEG_coef <- coef_extract(list_input = Vol_ASEG_)
+saveRDS(Vol_ASEG_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/Vol_ASEG_coef",".RDS"))
+```
+
+```{r,eval=FALSE}
+Avg_T2_ASEG_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/Avg_T2_ASEG_",".enet_results.RDS"))
+Avg_T2_ASEG_coef <- coef_extract(list_input = Avg_T2_ASEG_)
+saveRDS(Avg_T2_ASEG_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/Avg_T2_ASEG_coef",".RDS"))
+```
+
+```{r,eval=FALSE}
+Avg_T1_ASEG_Vol_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/Avg_T1_ASEG_Vol_",".enet_results.RDS"))
+Avg_T1_ASEG_Vol_coef <- coef_extract(list_input = Avg_T1_ASEG_Vol_)
+saveRDS(Avg_T1_ASEG_Vol_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/Avg_T1_ASEG_Vol_coef",".RDS"))
+```
+
+```{r,eval=FALSE}
+rsmri_gordon_aseg_data <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/rsmri_gordon_aseg_data",".enet_results.RDS"))
+rsmri_gordon_aseg_coef <- coef_extract(list_input = rsmri_gordon_aseg_data)
+saveRDS(rsmri_gordon_aseg_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/rsmri_gordon_aseg_coef",".RDS"))
+```
+
+```{r,eval=FALSE}
+incorrectgovsincorrectstop_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/incorrectgovsincorrectstop_ROI_",".enet_results.RDS"))
+incorrectgovsincorrectstop_ROI_coef <- coef_extract(list_input = incorrectgovsincorrectstop_ROI_)
+saveRDS(incorrectgovsincorrectstop_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/incorrectgovsincorrectstop_ROI_coef",".RDS"))
+```
+
+```{r,eval=FALSE}
+incorrectgovscorrectgo_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/incorrectgovscorrectgo_ROI_",".enet_results.RDS"))
+incorrectgovscorrectgo_ROI_coef <- coef_extract(list_input = incorrectgovscorrectgo_ROI_)
+saveRDS(incorrectgovscorrectgo_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/incorrectgovscorrectgo_ROI_coef",".RDS"))
+```
+
+```{r,eval=FALSE}
+correctstopvsincorrectstop_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/correctstopvsincorrectstop_ROI_",".enet_results.RDS"))
+correctstopvsincorrectstop_ROI_coef <- coef_extract(list_input = correctstopvsincorrectstop_ROI_)
+saveRDS(correctstopvsincorrectstop_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/correctstopvsincorrectstop_ROI_coef",".RDS"))
+```
+
+```{r,eval=FALSE}
+anystopvscorrectgo_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/anystopvscorrectgo_ROI_",".enet_results.RDS"))
+anystopvscorrectgo_ROI_coef <- coef_extract(list_input = anystopvscorrectgo_ROI_)
+saveRDS(anystopvscorrectgo_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/anystopvscorrectgo_ROI_coef",".RDS"))
+```
+
+```{r,eval=FALSE}
+incorrectstopvscorrectgo_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/incorrectstopvscorrectgo_ROI_",".enet_results.RDS"))
+incorrectstopvscorrectgo_ROI_coef <- coef_extract(list_input = incorrectstopvscorrectgo_ROI_)
+saveRDS(incorrectstopvscorrectgo_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/incorrectstopvscorrectgo_ROI_coef",".RDS"))
+```
+
+```{r,eval=FALSE}
+correctstopvscorrectgo_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/correctstopvscorrectgo_ROI_",".enet_results.RDS"))
+correctstopvscorrectgo_ROI_coef <- coef_extract(list_input = correctstopvscorrectgo_ROI_)
+saveRDS(correctstopvscorrectgo_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/correctstopvscorrectgo_ROI_coef",".RDS"))
+```
+
+```{r,eval=FALSE}
+correctgovsfixation_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/correctgovsfixation_ROI_",".enet_results.RDS"))
+correctgovsfixation_ROI_coef <- coef_extract(list_input = correctgovsfixation_ROI_)
+saveRDS(correctgovsfixation_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/correctgovsfixation_ROI_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+antiLargeLossVsSmallLoss_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/antiLargeLossVsSmallLoss_ROI_",".enet_results.RDS"))
+antiLargeLossVsSmallLoss_ROI_coef <- coef_extract(list_input = antiLargeLossVsSmallLoss_ROI_)
+saveRDS(antiLargeLossVsSmallLoss_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/antiLargeLossVsSmallLoss_ROI_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+antiSmallLossVsNeu_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/antiSmallLossVsNeu_ROI_",".enet_results.RDS"))
+antiSmallLossVsNeu_ROI_coef <- coef_extract(list_input = antiSmallLossVsNeu_ROI_)
+saveRDS(antiSmallLossVsNeu_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/antiSmallLossVsNeu_ROI_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+antiLargeLossVsNeu_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/antiLargeLossVsNeu_ROI_",".enet_results.RDS"))
+antiLargeLossVsNeu_ROI_coef <- coef_extract(list_input = antiLargeLossVsNeu_ROI_)
+saveRDS(antiLargeLossVsNeu_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/antiLargeLossVsNeu_ROI_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+antiLargeRewVsSmallRew_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/antiLargeRewVsSmallRew_ROI_",".enet_results.RDS"))
+antiLargeRewVsSmallRew_ROI_coef <- coef_extract(list_input = antiLargeRewVsSmallRew_ROI_)
+saveRDS(antiLargeRewVsSmallRew_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/antiLargeRewVsSmallRew_ROI_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+antiSmallRewVsNeu_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/antiSmallRewVsNeu_ROI_",".enet_results.RDS"))
+antiSmallRewVsNeu_ROI_coef <- coef_extract(list_input = antiSmallRewVsNeu_ROI_)
+saveRDS(antiSmallRewVsNeu_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/antiSmallRewVsNeu_ROI_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+antiLargeRewVsNeu_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/antiLargeRewVsNeu_ROI_",".enet_results.RDS"))
+antiLargeRewVsNeu_ROI_coef <- coef_extract(list_input = antiLargeRewVsNeu_ROI_)
+saveRDS(antiLargeRewVsNeu_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/antiLargeRewVsNeu_ROI_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+feedPunPosVsNeg_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/feedPunPosVsNeg_ROI_",".enet_results.RDS"))
+feedPunPosVsNeg_ROI_coef <- coef_extract(list_input = feedPunPosVsNeg_ROI_)
+saveRDS(feedPunPosVsNeg_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/feedPunPosVsNeg_ROI_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+feedRewPosVsNeg_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/feedRewPosVsNeg_ROI_",".enet_results.RDS"))
+feedRewPosVsNeg_ROI_coef <- coef_extract(list_input = feedRewPosVsNeg_ROI_)
+saveRDS(feedRewPosVsNeg_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/feedRewPosVsNeg_ROI_coef",".RDS"))
+```
+
+```{r,eval=FALSE}
+antiLosVsNeu_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/antiLosVsNeu_ROI_",".enet_results.RDS"))
+antiLosVsNeu_ROI_coef <- coef_extract(list_input = antiLosVsNeu_ROI_)
+saveRDS(antiLosVsNeu_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/antiLosVsNeu_ROI_coef",".RDS"))
+```
+
+```{r,eval=FALSE}
+antiRewVsNeu_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/antiRewVsNeu_ROI_",".enet_results.RDS"))
+antiRewVsNeu_ROI_coef <- coef_extract(list_input = antiRewVsNeu_ROI_)
+saveRDS(antiRewVsNeu_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/antiRewVsNeu_ROI_coef",".RDS"))
+```
+
+```{r,eval=FALSE}
+posfacevsneutface_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/posfacevsneutface_ROI_",".enet_results.RDS"))
+posfacevsneutface_ROI_coef <- coef_extract(list_input = posfacevsneutface_ROI_)
+saveRDS(posfacevsneutface_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/posfacevsneutface_ROI_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+negfacevsneutface_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/negfacevsneutface_ROI_",".enet_results.RDS"))
+negfacevsneutface_ROI_coef <- coef_extract(list_input = negfacevsneutface_ROI_)
+saveRDS(negfacevsneutface_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/negfacevsneutface_ROI_coef",".RDS"))
+```
+
+
+```{r,eval=FALSE}
+facevsplace_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/facevsplace_ROI_",".enet_results.RDS"))
+facevsplace_ROI_coef <- coef_extract(list_input = facevsplace_ROI_)
+saveRDS(facevsplace_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/facevsplace_ROI_coef",".RDS"))
+```
+
+
+
+```{r,eval=FALSE}
+emotionvsneutface_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/emotionvsneutface_ROI_",".enet_results.RDS"))
+emotionvsneutface_ROI_coef <- coef_extract(list_input = emotionvsneutface_ROI_)
+saveRDS(emotionvsneutface_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/emotionvsneutface_ROI_coef",".RDS"))
+```
+
+```{r,eval=FALSE}
+X2backvs0back_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/X2backvs0back_ROI_",".enet_results.RDS"))
+X2backvs0back_ROI_coef <- coef_extract(list_input = X2backvs0back_ROI_)
+saveRDS(X2backvs0back_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/X2backvs0back_ROI_coef",".RDS"))
+```
+
+```{r,eval=FALSE}
+emotion_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/emotion_ROI_",".enet_results.RDS"))
+emotion_ROI_coef <- coef_extract(list_input = emotion_ROI_)
+saveRDS(emotion_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/emotion_ROI_coef",".RDS"))
+```
+
+```{r,eval=FALSE}
+place_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/place_ROI_",".enet_results.RDS"))
+place_ROI_coef <- coef_extract(list_input = place_ROI_)
+saveRDS(place_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/place_ROI_coef",".RDS"))
+```
+
+```{r,eval=FALSE}
+X2back_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/X2back_ROI_",".enet_results.RDS"))
+X2back_ROI_coef <- coef_extract(list_input = X2back_ROI_)
+saveRDS(X2back_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/X2back_ROI_coef",".RDS"))
+```
+
+```{r,eval=FALSE}
+X0back_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/X0back_ROI_",".enet_results.RDS"))
+X0back_ROI_coef <- coef_extract(list_input = X0back_ROI_)
+saveRDS(X0back_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/X0back_ROI_coef",".RDS"))
+```
+
+```{r,eval=FALSE}
+X0back_ROI_ <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/X0back_ROI_",".enet_results.RDS"))
+X0back_ROI_coef <- coef_extract(list_input = X0back_ROI_)
+saveRDS(X0back_ROI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/X0back_ROI_coef",".RDS"))
+```
+
+```{r,eval=FALSE}
+rsmri_subnet <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/rsmri_subnet",".enet_results.RDS"))
+rsmri_subnet_coef <- coef_extract(list_input = rsmri_subnet)
+saveRDS(rsmri_subnet_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/rsmri_subnet_coef",".RDS"))
+```
+
+
+When DTI is fitted, there are some problems with Nesi. So it is fitted locally. The format of the outputs is a bit different.
+
+```{r}
+coef_extract_dti <- function(list_input){
+baseline_enet_pred <- list_input[["baseline_train_pred"]]
+baseline_enet_pred_fit <- map(baseline_enet_pred,"model_final_fit")
+baseline_enet_pred_fit_param <- map(baseline_enet_pred_fit,~parsnip::tidy(.))
+
+followup_enet_pred <- list_input[["followup_train_pred"]]
+followup_enet_pred_fit <- map(followup_enet_pred,"model_final_fit")
+followup_enet_pred_fit_param <- map(followup_enet_pred_fit,~parsnip::tidy(.))
+
+output_list <- list(baseline_coefs = baseline_enet_pred_fit_param,
+                    followup_coefs = followup_enet_pred_fit_param,
+                    train_baseline_data=list_input[["train_baseline_data"]],
+                    test_baseline_data=list_input[["test_baseline_data"]],
+                    train_followup_data=list_input[["train_followup_data"]],
+                    test_followup_data=list_input[["test_followup_data"]])  
+return(output_list)
+}
+
+
+
+```
+
+
+
+```{r,eval=FALSE}
+DTI_data <- readRDS(paste0(scriptfold,"Common_psy_gene_brain_all/saved_outputs/DTI_output_list",".RData"))
+DTI_coef <- coef_extract_dti(list_input = DTI_data)
+saveRDS(DTI_coef,paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/DTI_coef",".RDS"))
+```
+
+
+```{r}
+modality_names_clean <- modality_names %>% str_remove_all("data")
+ coef_names <- paste0(modality_names_clean,"coef")
+## new added modality does not have the same name pattern as before
+ coef_names[45] <- "rsmri_subnet_coef"
+```
+
+## extract the list of parameters from the processed list saved above
+
+
+```{r,eval=TRUE,echo=FALSE}
+
+coefs_all_brain <- map(.x = coef_names,~readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collected_enet_coefs/",.x,".RDS")))
+ 
+names(coefs_all_brain) <- coef_names
+
+coefs_all_brain_baseline <- map(coefs_all_brain,"baseline_coefs")
+coefs_all_brain_followup <- map(coefs_all_brain,"followup_coefs")
+
+site_char <- coefs_all_brain_baseline[["DTI_coef"]]%>% names
+```
+
+There are 21 sites. Each with its own estimate of parameters. The following codes combine all the sites and compute the average across all the sites.
+
+```{r}
+rename_coef_site <- function(data_input,site_input){
+  names(data_input) <- c("term",    paste0(site_input,"_estimate") )
+  return(data_input)
+}
+
+coef_processing <- function(list_input){
+  cleaned_list <- list_input %>% map(.,~filter(.x,term !="(Intercept)")%>%
+                                       select(-penalty))
+  renamed_list <- map2(.x = cleaned_list,.y=site_char,~rename_coef_site(data_input =.x,site_input=.y))
+  joined_tibble <- plyr::join_all(renamed_list,by = "term")
+ coefs_tibbles <- joined_tibble %>% select(ends_with("_estimate"))
+ output_tibble <-joined_tibble %>% mutate(mean_estimate = rowMeans(coefs_tibbles))
+ return(output_tibble)
+}
+
+processed_coefs_baseline <- coefs_all_brain_baseline %>% map(.,~coef_processing(list_input = .))
+processed_coefs_followup <- coefs_all_brain_followup %>% map(.,~coef_processing(list_input = .))
+
+```
+
+About the common legend in all the brain plots:
+
+Because we have 45 different modalities. The total number of the brain plots are going to be nearly 200. To fit all of them into one big plot, it is common to use one legend rather than each plot has its own. The following codes is to calculate the range of all the modalities share the same legend. 
+
+Trying to apply the same legend for all of the plots.
+
+
+```{r}
+
+range_extract <- function(table_input, site_mean_input="mean"){
+  estimate_names <- paste0(site_mean_input,"_estimate")
+  range_estimate <- range(table_input[[estimate_names]],na.rm = TRUE)
+  return(tibble(max = range_estimate[2],min = range_estimate[1]))
+}
+
+baseline_range_tibble <- map(processed_coefs_baseline,~range_extract(table_input = .))%>%
+                         do.call(rbind,.)
+
+baseline_range_tibble$max%>% max()
+baseline_range_tibble$min%>% min()
+
+
+
+baseline_range_tibble_select <- baseline_range_tibble %>% 
+                                mutate(modality =rownames(baseline_range_tibble))
+
+baseline_range_tibble_select <- baseline_range_tibble_select%>%
+                                filter(modality != "Avg_T1_ASEG_Vol_coef")
+baseline_range_tibble_select$max%>% max()
+baseline_range_tibble_select$min%>% min()
+
+followup_range_tibble <- map(processed_coefs_followup,~range_extract(table_input = .))%>%
+                         do.call(rbind,.)
+
+followup_range_tibble$max%>% max()
+followup_range_tibble$min%>% min()
+
+followup_range_tibble_select <- followup_range_tibble %>% 
+                                mutate(modality =rownames(followup_range_tibble))
+
+followup_range_tibble_select <- followup_range_tibble_select%>%
+                                filter(modality != "Avg_T1_ASEG_Vol_coef")
+followup_range_tibble_select$max%>% max()
+followup_range_tibble_select$min%>% min()
+```
+It seems that only the set of brain features with the name: "Avg_T1_ASEG_Vol_coef" has a minimum of less than -1. All other sets of features seems to be fine with the common legend range of -0.4 to 0.4. 
+
+There are only two regions in "Avg_T1_ASEG_Vol_coef". They are treated as outliers and dropped from the plot.
+
+# Setting up names and functions to plot the enet coefficients on the brain
+
+## Setting up names for plotting
+
+Loading in modality names and their reference names for plotting
+
+```{r}
+plotting_names <- readxl::read_excel(paste0(scriptfold,"Common_psy_gene_brain_all/CommonalityPlotingNames.xlsx"))
+
+
+name_with_space <-  c("DTI","rsfMRI cortical FC","T2 summations","T1 summations","T2 normalised intensity","T2 gray matter \navg intensity","T2 white matter \navg intensity","T1 normalised intensity","T1 gray matter \navg intensity","T1 white matter \navg intensity","sulcal depth","cortical volumne","cortical area","cortical thickness","subcortical \nvolumne","T2 subcortical \navg intensity","T1 subcortical \navg intensity","rsfMRI temporal \nvariance","SST Incorrect Go \nvs Incorrect Stop","SST Incorrect Go \nvs Correct Go","SST Correct Stop \nvs Incorrect Stop","SST Any Stop \nvs Correct Go","SST Incorrect Stop \nvs Correct Go","SST Correct Stop \nvs Correct Go","SST Correct Go \nvs Fixation","MID Large Loss vs \nSmall Loss anticipation","MID Smal Loss vs \nNeutral anticipation","MID Large Loss vs \nNeutral anticipation","MID Large Reward vs \nSmall Reward anticipation","MID Small Reward vs \nNeutral anticipation","MID Large Reward vs \nNeutral anticipation","MID Postive vs Negative \nPunishment Feedback","MID Postive vs Negative \nReward Feedback","MID Loss vs \nNeutral anticipation","MID Reward vs \nNeutral anticipation","ENback Positive \nvs Neutral Face","ENback Negative \nvs Neutral Face","ENback Face \nvs Place","ENback Emotion \nvs Neutral Face","ENback 2back \nvs 0back","ENback emotion","ENback place","ENback 2back","ENback 0back","rsfMRI \nsubcortical-network FC") 
+
+plotting_names <-plotting_names %>% mutate(plotting_name_space = name_with_space)
+```
+
+
+
+```{r}
+site_mean_char <- c(site_char,"mean")
+
+```
+
+
+## Setting up the brain plot color palette:
+
+```{r}
+
+brain_plot_color <- c("#240105","#380208","#450109","#52010b","#69010e","#8a0313","#990315","#b00419","#B2182B","#D6604D","#F4A582","#FDDBC7","#D1E5F0","#92C5DE","#4393C3","#2166AC","#0358ad","#02509e","#01488f","#013870","#002c59","#012a54","#012142","#001933")
+
+```
+
+
+## brain plot functions
+
+
+Using ggseg to plot in the brain.
+
+https://github.com/ggseg/ggseg
+
+Extra atlus can be found here.
+
+https://github.com/ggseg/ggsegExtra
+
+For some packages cannot found on google, please go to the link above.
+
+```{r}
+brain_plot_data_pred <- function(table_input, contrast_input) {
+  ### rename to match the naming table  
+    brainPlotTib <- table_input %>%
+    rename(label = term) %>%  
+    mutate(.,label = str_remove_all(label, contrast_input)) %>%
+  #  mutate(.,label = str_replace_all(variable, str_type, '')) %>%
+      mutate(.,label = str_replace_all(label, '\\.', '-')) %>%
+      mutate(.,label = str_replace_all(label, 'Brain-Stem', 'brain-stem')) %>% 
+      mutate(.,label = str_replace_all(label, 'Right-Cerebellum-Cortex', 'right-cerebellum-cortex')) %>%
+      mutate(.,label = str_replace_all(label, 'roi_', ''))
+
+ggsegDesterieux_resp <- ggsegDesterieux::desterieux %>% as_tibble %>% 
+        select(label) %>% 
+        na.omit() %>%
+        left_join(brainPlotTib, by = "label")
+
+ggsegAseg_resp <- ggseg::aseg$data %>% as_tibble %>% 
+        select(label) %>% 
+        na.omit() %>%
+        left_join(brainPlotTib, by = "label")
+return(list(ggsegDesterieux_resp=ggsegDesterieux_resp,
+            ggsegAseg_resp=ggsegAseg_resp))
+}
+
+### this function is to get the common legend across all fmri modalities
+Desterieux_aseg_one_site <- function(list_input,contrast_input,site_mean_input){
+  aligned_plot_label <- plotting_names$plotting_name_space[which(plotting_names$Original_name==contrast_input)]
+  
+ estimate_name <- paste0(site_mean_input,"_estimate")
+  ggsegDesterieux_resp <- list_input[["ggsegDesterieux_resp"]]%>%
+                          select(all_of(c("label",estimate_name)))
+  ggsegAseg_resp <- list_input[["ggsegAseg_resp"]]%>%
+                          select(all_of(c("label",estimate_name)))
+
+  legend_min <- format(round(min(c(ggsegDesterieux_resp[[estimate_name]],
+                                   ggsegAseg_resp[[estimate_name]]), na.rm = TRUE), 3), nsmall = 3)%>%
+                                  as.numeric() 
+  
+  legend_max <- format(round(max(c(ggsegDesterieux_resp[[estimate_name]],
+                                   ggsegAseg_resp[[estimate_name]]), na.rm = TRUE), 3), nsmall = 3)%>%
+                                  as.numeric() 
+  
+    ##aes_string is an old function use aes
+  Desterieux_plot <- ggseg(.data = ggsegDesterieux_resp,
+              atlas = 'desterieux', 
+              mapping = aes(fill = .data[[estimate_name]]),
+              colour="black",
+              size = 0.3
+        ) + 
+        theme_void() +
+        scale_fill_gradientn( #colours=kovesi.rainbow(200), guide = "colourbar"
+                             colours=brain_plot_color ,na.value = "transparent",
+                           breaks=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                           labels=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                    limits=c(-0.4,0.4))  +
+    theme(legend.position="bottom",
+          legend.title=element_text(size=15),
+          legend.text=element_text(size=12),
+          legend.key.width= unit(2, 'cm'))  +
+        labs(title =NULL) +
+    labs(fill=guide_legend(title="Mean elastic net coefficient"))
+  
+Aseg_plot <- ggplot(data = ggsegAseg_resp)+
+  geom_brain( atlas = aseg, 
+              mapping = aes(fill = .data[[estimate_name]]),
+              side = "coronal",
+              colour="black",
+              size = 0.3)+ 
+        theme_void() +
+         scale_fill_gradientn( #colours=kovesi.rainbow(200), guide = "colourbar"
+                             colours=brain_plot_color ,na.value = "transparent",
+                           breaks=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                           labels=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                    limits=c(-0.4,0.4))  +
+       guides(fill = guide_colourbar(barwidth = 0.5,
+                                     barheight = 3,
+                                     title = NULL))+ theme(legend.position="bottom",
+                                                           legend.key.width= unit(2, 'cm')) +
+  labs(fill=guide_legend(title="Mean elastic net coefficient"))
+### combine dest plot with aseg plot together with labels
+
+aligned_plots <- gridExtra::grid.arrange(Desterieux_plot,Aseg_plot,nrow = 1, ncol = 2, widths = c(8, 1.5))
+#labeled_aligned_plots <- ggpubr::annotate_figure(aligned_plots,
+#                          left= ggpubr::text_grob(aligned_plot_label,size=15,rot=0),fig.lab.size=12) 
+
+
+modality_label <- ggdraw() + 
+  draw_label(
+    aligned_plot_label,
+ #   fontface = 'bold',
+    x = 0,
+    hjust = 0
+  ) +
+  theme(
+    # add margin on the left of the drawing canvas,
+    # so title is aligned with left edge of first plot
+    plot.margin = margin(t = 0, r =0, b = 0, l = 3.5, unit = "cm")
+  )
+  labeled_aligned_plots<- plot_grid(modality_label,aligned_plots,
+                                       ncol = 2 , 
+                                       rel_heights = c(0.01, 10))
+
+return(list(Desterieux_plot=Desterieux_plot,
+            Aseg_plot=Aseg_plot,
+            labeled_aligned_plots=labeled_aligned_plots))
+}
+
+
+
+Desterieux_aseg_one_site_no_legend <- function(list_input,contrast_input,site_mean_input){
+  aligned_plot_label <- plotting_names$plotting_name_space[which(plotting_names$Original_name==contrast_input)]
+  
+ estimate_name <- paste0(site_mean_input,"_estimate")
+  ggsegDesterieux_resp <- list_input[["ggsegDesterieux_resp"]]%>%
+                          select(all_of(c("label",estimate_name)))
+  ggsegAseg_resp <- list_input[["ggsegAseg_resp"]]%>%
+                          select(all_of(c("label",estimate_name)))
+  ##aes_string is an old function use aes
+
+  legend_min <- format(round(min(c(ggsegDesterieux_resp[[estimate_name]],
+                                   ggsegAseg_resp[[estimate_name]]), na.rm = TRUE), 3), nsmall = 3)%>%
+                                  as.numeric() 
+  
+  legend_max <- format(round(max(c(ggsegDesterieux_resp[[estimate_name]],
+                                   ggsegAseg_resp[[estimate_name]]), na.rm = TRUE), 3), nsmall = 3)%>%
+                                  as.numeric() 
+  Desterieux_plot <- ggseg(.data = ggsegDesterieux_resp,
+              atlas = 'desterieux', 
+              mapping = aes(fill = .data[[estimate_name]]),
+              colour="black",
+              size=0.3
+        ) + 
+        theme_void() +
+       scale_fill_gradientn( #colours=kovesi.rainbow(200), guide = "colourbar"
+                             colours=brain_plot_color ,na.value = "transparent",
+                           breaks=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                           labels=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                    limits=c(-0.4,0.4))  +
+        theme(legend.position = "none") +
+        labs(title =NULL) 
+
+
+
+
+Aseg_plot <- ggplot(data = ggsegAseg_resp)+
+  geom_brain( atlas = aseg, 
+              mapping = aes(fill = .data[[estimate_name]]),
+              side = "coronal",
+              colour="black",
+              size=0.3)+ 
+        theme_void() +
+      scale_fill_gradientn( #colours=kovesi.rainbow(200), guide = "colourbar"
+                             colours=brain_plot_color ,na.value = "transparent",
+                           breaks=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                           labels=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                    limits=c(-0.4,0.4))  +
+        theme(legend.position = "none") +
+        guides(fill = guide_colourbar(barwidth = 0.5, barheight = 3, title = NULL)) 
+### combine dest plot with aseg plot together with labels
+
+aligned_plots <- gridExtra::grid.arrange(Desterieux_plot,Aseg_plot,nrow = 1, ncol = 2, widths = c(8, 1.5))
+#labeled_aligned_plots <- ggpubr::annotate_figure(aligned_plots,
+#                          left= ggpubr::text_grob(aligned_plot_label,size=15,rot=0),fig.lab.size=12) 
+
+
+modality_label <- ggdraw() + 
+  draw_label(
+    aligned_plot_label,
+  #  fontface = 'bold',
+    x = 0,
+    hjust = 0
+  ) +
+  theme(
+    # add margin on the left of the drawing canvas,
+    # so title is aligned with left edge of first plot
+    plot.margin = margin(t = 0, r =0, b = 0, l = 3.5, unit = "cm")
+  )
+  labeled_aligned_plots<- plot_grid(modality_label,aligned_plots,
+                                       ncol = 2 , 
+                                       rel_heights = c(0.01, 10))
+
+
+
+
+return(list(Desterieux_plot=Desterieux_plot,
+            Aseg_plot=Aseg_plot,
+            labeled_aligned_plots=labeled_aligned_plots))
+}
+
+```
+
+# Plotting a set of breain features at baseline
+
+## NBack contrasts
+
+Extract the coefficients for all the NBack contrasts.
+
+
+```{r}
+ nback_contrasts <- c("X0back_ROI_","X2back_ROI_","place_ROI_","emotion_ROI_","X2backvs0back_ROI_","facevsplace_ROI_"     ,"emotionvsneutface_ROI_", "negfacevsneutface_ROI_", "posfacevsneutface_ROI_")
+
+nback_contrasts_coefs <- paste0(nback_contrasts,"coef")
+### extract multiple elements from a list
+processed_coefs_baseline_nback <- processed_coefs_baseline[nback_contrasts_coefs]
+
+
+```
+
+
+
+```{r,warning=FALSE, fig.align = "center", fig.height =5.5, fig.width = 7,out.height="50%"}
+## get the names
+nback_brain_plot_processed <- map2(.x=processed_coefs_baseline_nback,.y=nback_contrasts,
+                                   ~brain_plot_data_pred(table_input = .x,contrast_input=.y))
+
+
+### example output
+nback_one_mod_plot <- Desterieux_aseg_one_site(list_input=nback_brain_plot_processed[["X0back_ROI_coef"]],
+                         contrast_input = nback_contrasts[1],site_mean_input = "mean")
+
+dext_aseg_plot_legend <- get_legend(nback_one_mod_plot[["Desterieux_plot"]])
+nback_one_mod_plot
+#brain_plot_nback_all_site
+
+## multiple plots
+nback_brain_list <- map2(.x = nback_brain_plot_processed,.y = nback_contrasts, 
+         ~Desterieux_aseg_one_site_no_legend(list_input = .x, contrast_input = .y,site_mean_input = "mean"))
+
+nback_brain_aligned_list <- map(nback_brain_list,"labeled_aligned_plots")
+### align the plots
+nback_all_plots <- ggpubr::ggarrange(plotlist=nback_brain_aligned_list, nrow = length(nback_contrasts),common.legend = TRUE,legend.grob = dext_aseg_plot_legend,legend = "top")
+
+nback_all_plots
+```
+
+
+## MID contrasts
+
+```{r}
+### extract all the outputs of MID contrasts
+ MID_contrasts <- c("antiRewVsNeu_ROI_","antiLosVsNeu_ROI_","feedRewPosVsNeg_ROI_","feedPunPosVsNeg_ROI_"     ,"antiLargeRewVsNeu_ROI_","antiSmallRewVsNeu_ROI_","antiLargeRewVsSmallRew_ROI_","antiLargeLossVsNeu_ROI_","antiSmallLossVsNeu_ROI_","antiLargeLossVsSmallLoss_ROI_")
+
+MID_contrasts_coefs <- paste0(MID_contrasts,"coef")
+
+processed_coefs_baseline_MID <- processed_coefs_baseline[MID_contrasts_coefs]
+
+
+```
+
+
+
+```{r,warning=FALSE, fig.align = "center", fig.height =6, fig.width = 7}
+##matching the names with the package
+MID_brain_plot_processed <- map2(.x=processed_coefs_baseline_MID,.y=MID_contrasts,
+                                   ~brain_plot_data_pred(table_input = .x,contrast_input=.y))
+
+
+Desterieux_aseg_one_site(list_input=MID_brain_plot_processed[["antiRewVsNeu_ROI_coef"]],
+                         contrast_input = MID_contrasts[1],site_mean_input = "mean")
+### plotting multiple sets of brain features
+MID_brain_list <- map2(.x = MID_brain_plot_processed,.y = MID_contrasts, 
+        ~Desterieux_aseg_one_site_no_legend(list_input = .x, contrast_input = .y,site_mean_input = "mean"))
+
+MID_brain_aligned_list <- map(MID_brain_list,"labeled_aligned_plots")
+### align the plots
+MID_all_plots <- ggpubr::ggarrange(plotlist=MID_brain_aligned_list, nrow = length(MID_contrasts))
+
+MID_all_plots
+```
+
+
+
+## SST contrasts
+
+```{r}
+ SST_contrasts <- c("correctgovsfixation_ROI_","correctstopvscorrectgo_ROI_","incorrectstopvscorrectgo_ROI_","anystopvscorrectgo_ROI_","correctstopvsincorrectstop_ROI_","incorrectgovscorrectgo_ROI_", "incorrectgovsincorrectstop_ROI_")
+
+SST_contrasts_coefs <- paste0(SST_contrasts,"coef")
+
+processed_coefs_baseline_SST <- processed_coefs_baseline[SST_contrasts_coefs]
+
+
+```
+
+
+
+```{r,warning=FALSE, fig.align = "center", fig.height =5, fig.width = 7}
+##matching the names with the package
+SST_brain_plot_processed <- map2(.x=processed_coefs_baseline_SST,.y=SST_contrasts,
+                                   ~brain_plot_data_pred(table_input = .x,contrast_input=.y))
+
+Desterieux_aseg_one_site(list_input=SST_brain_plot_processed[["correctgovsfixation_ROI_coef"]],
+                         contrast_input = SST_contrasts[1],site_mean_input = "mean")
+
+### plotting multiple sets of brain features
+SST_brain_list <- map2(.x = SST_brain_plot_processed,.y = SST_contrasts, 
+                  ~Desterieux_aseg_one_site_no_legend(list_input = .x, contrast_input = .y,site_mean_input = "mean"))
+
+SST_brain_aligned_list <- map(SST_brain_list,"labeled_aligned_plots")
+### align the plots
+SST_all_plots <- ggpubr::ggarrange(plotlist=SST_brain_aligned_list, nrow = length(SST_contrasts))
+
+SST_all_plots
+```
+
+
+
+## rsmri within avg
+
+```{r}
+### transferring the long format data into matrix
+### getting the row names and the column names of the matrix
+processed_coefs_baseline_rsmri_within_avg <- processed_coefs_baseline[["rsmri_within_avg_coef"]]
+
+rsmri_within_avg_all_names <- processed_coefs_baseline_rsmri_within_avg$term
+
+rsmri_within_avg_roi_detect_vec <-rsmri_within_avg_all_names%>% str_detect(paste0("^","avgAuditory"))
+
+rsmri_within_avg_roi_names <- rsmri_within_avg_all_names[which(rsmri_within_avg_roi_detect_vec==TRUE)]
+
+rsmri_within_avg_roi_names <-rsmri_within_avg_roi_names %>% str_remove_all("avgAuditory")
+
+rsmri_within_avg_roi_names_all <- c("Auditory",rsmri_within_avg_roi_names)
+
+avg_rsmri_within_avg_roi_names_all <- paste0("avg", rsmri_within_avg_roi_names_all)
+
+## function to convert the data table into matrix
+matrix_prepare <- function(data_list,site_mean_input = "mean"){
+  estimate_name <- paste0(site_mean_input,"_estimate")
+  data_list <- data_list %>%
+    select(all_of(c("term",estimate_name)))%>%
+    rename(roi=term)
+  
+  
+  heat_matrix <- matrix(rep(0,13*13),nrow = 13)
+  for(i in 1:dim(data_list)[1]){
+  if(str_detect(data_list$roi[i],paste0("^","avg"))==TRUE){
+coor_matrix_1 <- which(as.vector(avg_rsmri_within_avg_roi_names_all %>% map(.,~str_detect(data_list$roi[i],paste0("\\A",.)))%>%do.call(rbind,.)) ==TRUE) 
+coor_matrix_2 <- which(as.vector(rsmri_within_avg_roi_names_all %>% map(.,~str_detect(data_list$roi[i],paste0(.,"$")))%>%do.call(rbind,.)) ==TRUE) 
+heat_matrix[coor_matrix_1,coor_matrix_2]<- heat_matrix[coor_matrix_2,coor_matrix_1]<- data_list[[estimate_name]][i]
+}
+if(str_detect(data_list$roi[i],paste0("^","Within"))==TRUE){
+  coor_matrix <- which(as.vector(rsmri_within_avg_roi_names_all %>% map(.,~str_detect(data_list$roi[i],paste0("Within",.)))%>%do.call(rbind,.)) ==TRUE) 
+  heat_matrix[coor_matrix,coor_matrix]<- data_list[[estimate_name]][i]
+}
+  }
+  heat_matrix[lower.tri(heat_matrix)]<- NA
+return(heat_matrix)
+}
+
+baseline_rsmri_within_avg_matrix <- matrix_prepare(data_list=processed_coefs_baseline_rsmri_within_avg)
+
+rsmri_matrix_to_long <- function(data_input = baseline_rsmri_within_avg_matrix){
+  colnames(data_input) <- rsmri_within_avg_roi_names_all
+rownames(data_input)<- rsmri_within_avg_roi_names_all
+## change the matrix into long format data table
+output_tibble <-data_input %>% 
+                                          as.data.frame()%>%
+                                          mutate(roi = rsmri_within_avg_roi_names_all)%>%
+                                          reshape2::melt(.,id.vars="roi")
+return(output_tibble)
+}
+baseline_rsmri_within_avg_tibble <- rsmri_matrix_to_long(data_input=baseline_rsmri_within_avg_matrix)
+
+rsmri_within_avg_title <- plotting_names$plotting_name[which(plotting_names$Original_name=="rsmri_within_avg_data")]
+
+
+### use the same legend for all the plots with fill
+rsmri_within_avg_heatmap <- function(data_input
+                                     #, site_mean_input="mean"
+                                     ){
+#  estimate_name <- paste0(site_mean_input,"_estimate")
+  ## plotting the heat map
+
+baseline_rsmri_within_avg_plot <-ggplot(data =data_input, aes(x=variable, y=roi, fill=value)) +
+ geom_tile(color = "white")+
+   labs(x=NULL,y=NULL,title=paste0(rsmri_within_avg_title ))+
+    scale_fill_gradientn( #colours=kovesi.rainbow(200), guide = "colourbar"
+                             colours=brain_plot_color ,na.value = "gray50",
+                           breaks=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                           labels=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                    limits=c(-0.4,0.4))  +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 12, hjust = 1),
+      axis.text.y = element_text(angle = 45, vjust = 1, size = 12, hjust = 1),
+    plot.title = element_text(size=17),
+    legend.position = "none")+
+ coord_fixed()
+return(baseline_rsmri_within_avg_plot)
+}
+
+
+baseline_rsmri_within_avg_plot <- rsmri_within_avg_heatmap(data_input=baseline_rsmri_within_avg_tibble)
+baseline_rsmri_within_avg_plot
+```
+
+Rsmri within individual plots for all the sites: to check whether there are differences between sites. 
+
+```{r}
+
+baseline_rsmri_within_avg_matrix_all <-map(site_mean_char,
+                      ~matrix_prepare(data_list=processed_coefs_baseline_rsmri_within_avg,
+                                      site_mean_input = .)) 
+
+names(baseline_rsmri_within_avg_matrix_all) <- site_mean_char
+
+
+baseline_rsmri_within_avg_tibble_all <-map(baseline_rsmri_within_avg_matrix_all,
+                      ~rsmri_matrix_to_long(data_input=.)) 
+
+names(baseline_rsmri_within_avg_tibble_all) <- site_mean_char
+
+
+baseline_rsmri_within_avg_heatmap_all <-map(.x =baseline_rsmri_within_avg_tibble_all,
+                      ~rsmri_within_avg_heatmap(data_input=.x)) 
+names(baseline_rsmri_within_avg_heatmap_all) <- site_mean_char
+baseline_rsmri_within_avg_heatmap_all
+```
+
+## DTI
+
+
+
+```{r}
+
+processed_coefs_baseline_DTI <- processed_coefs_baseline[["DTI_coef"]]
+### Hagler is the name of the varialbe in the plotting table
+processed_coefs_baseline_DTI <- processed_coefs_baseline_DTI %>%  
+                  mutate(.,Hagler = str_replace_all(term, "FA_", ''))%>%
+                  select(-term)
+
+## plotting the DTI plot
+DTI_baseline_plot <- ggsegJHU::jhu %>% as_tibble %>% 
+      left_join(HaglerToJhu, by = c("hemi","region","side","label")) %>% 
+      left_join(processed_coefs_baseline_DTI, by = "Hagler") %>% 
+     select( -geometry) %>%
+      ggseg(atlas = jhu, 
+            mapping = aes(fill = mean_estimate),
+            colour="black",
+              size = 0.3)  +
+  scale_fill_brain("jhu", package = "ggsegJHU")+ 
+      theme_void() +
+    theme(text = element_text(size=30),
+          legend.position = "none") + 
+    labs(title = "DTI") +
+   scale_fill_gradientn( #colours=kovesi.rainbow(200), guide = "colourbar"
+                             colours=brain_plot_color ,na.value ="transparent",
+                           breaks=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                           labels=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                    limits=c(-0.4,0.4))  +
+      guides(fill = guide_colourbar(barwidth = 1.5, barheight = 9, title = NULL))
+DTI_baseline_plot
+#DTI_label <- ggdraw() + 
+#  draw_label(
+#    "DTI",
+ #   fontface = 'bold',
+#    x = 0,
+#    hjust = 0
+#  ) +
+#  theme(
+    # add margin on the left of the drawing canvas,
+    # so title is aligned with left edge of first plot
+#    plot.margin = margin(t = 0, r =0, b = 0, l = 3.5, unit = "cm")
+#  )
+#  DTI_baseline_aligned_plots<- plot_grid(DTI_label,DTI_baseline_plot,
+#                                       ncol = 2 , 
+#                                       rel_heights = c(0.01, 10))
+#DTI_baseline_aligned_plots
+```
+
+## smri_T1
+
+```{r}
+
+smri_t1_contrasts <- c("Dest_Thick_","Dest_Area_","Dest_Vol_","Dest_Sulcal_Depth_","Avg_T1_White_","Avg_T1_Gray_","Normalised_T1_")
+
+smri_t1_contrasts_coefs <- paste0(smri_t1_contrasts,"coef")
+
+processed_coefs_baseline_smri_t1 <- processed_coefs_baseline[smri_t1_contrasts_coefs]
+```
+
+This sets of brain features only has Desterieux atlas. So the plotting function is changed a bit
+
+```{r}
+
+Desterieux_data_pred <- function(table_input, contrast_input) {
+      brainPlotTib <- table_input %>%
+    rename(label = term) %>%  
+    mutate(.,label = str_remove_all(label, contrast_input)) %>%
+  #  mutate(.,label = str_replace_all(variable, str_type, '')) %>%
+      mutate(.,label = str_replace_all(label, '\\.', '-')) %>%
+      mutate(.,label = str_replace_all(label, 'Brain-Stem', 'brain-stem')) %>% 
+      mutate(.,label = str_replace_all(label, 'Right-Cerebellum-Cortex', 'right-cerebellum-cortex')) %>%
+      mutate(.,label = str_replace_all(label, 'roi_', ''))
+
+ggsegDesterieux_resp <- ggsegDesterieux::desterieux %>% as_tibble %>% 
+        select(label) %>% 
+        na.omit() %>%
+        left_join(brainPlotTib, by = "label")
+return(ggsegDesterieux_resp)
+}
+
+
+
+
+Desterieux_one_site_no_legend <- function(data_input,contrast_input,site_mean_input){
+  aligned_plot_label <- plotting_names$plotting_name_space[which(plotting_names$Original_name==contrast_input)]
+  
+ estimate_name <- paste0(site_mean_input,"_estimate")
+  ggsegDesterieux_resp <- data_input%>%
+                          select(all_of(c("label",estimate_name)))
+
+  ##aes_string is an old function use aes
+  Desterieux_plot <- ggseg(.data = ggsegDesterieux_resp,
+              atlas = 'desterieux', 
+              mapping = aes(fill = .data[[estimate_name]]),
+              colour="black",
+              size=0.3
+        ) + 
+        theme_void() +
+      scale_fill_gradientn( #colours=kovesi.rainbow(200), guide = "colourbar"
+                             colours=brain_plot_color ,na.value ="transparent",
+                           breaks=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                           labels=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                    limits=c(-0.4,0.4))  +
+        theme(legend.position = "none") +
+        labs(title =NULL) 
+
+modality_label <- ggdraw() + 
+  draw_label(
+    aligned_plot_label,
+  #  fontface = 'bold',
+    x = 0,
+    hjust = 0
+  ) +
+  theme(
+    # add margin on the left of the drawing canvas,
+    # so title is aligned with left edge of first plot
+    plot.margin = margin(t = 0, r =0, b = 0, l = 3.5, unit = "cm")
+  )
+  labeled_aligned_plots<- plot_grid(modality_label,Desterieux_plot,
+                                       ncol = 2 , 
+                                       rel_heights = c(0.01, 10))
+
+
+
+
+return(list(Desterieux_plot=Desterieux_plot,
+            labeled_aligned_plots=labeled_aligned_plots))
+}
+
+```
+
+
+
+```{r, fig.align = "center", fig.height =5, fig.width = 7}
+##matching the names with the package
+smri_t1_brain_plot_processed <- map2(.x=processed_coefs_baseline_smri_t1,.y=smri_t1_contrasts,
+                                   ~Desterieux_data_pred(table_input = .x,contrast_input=.y))
+
+
+Desterieux_one_site_no_legend(data_input=smri_t1_brain_plot_processed[["Dest_Thick_coef"]],
+                    contrast_input = smri_t1_contrasts[1],site_mean_input = "mean")
+
+
+### plotting multiple sets of brain features
+smri_t1_brain_list <- map2(.x = smri_t1_brain_plot_processed,.y = smri_t1_contrasts, 
+          ~Desterieux_one_site_no_legend(data_input =  .x, contrast_input = .y,site_mean_input ="mean"))
+
+smri_t1_brain_aligned_list <- map(smri_t1_brain_list,"labeled_aligned_plots")
+
+### aligning figures
+smri_t1_all_plots <- ggpubr::ggarrange(plotlist=smri_t1_brain_aligned_list, nrow = length(SST_contrasts))
+
+smri_t1_all_plots
+```
+## smri T2
+
+```{r}
+
+smri_t2_contrasts <- c( "Avg_T2_White_","Avg_T2_Gray_","Normalised_T2_")
+
+smri_t2_contrasts_coefs <- paste0(smri_t2_contrasts,"coef")
+
+processed_coefs_baseline_smri_t2 <- processed_coefs_baseline[smri_t2_contrasts_coefs]
+```
+
+
+
+```{r, fig.align = "center", fig.height =5, fig.width = 7}
+##matching the names with the package
+smri_t2_brain_plot_processed <- map2(.x=processed_coefs_baseline_smri_t2,.y=smri_t2_contrasts,
+                                   ~Desterieux_data_pred(table_input = .x,contrast_input=.y))
+
+
+Desterieux_one_site_no_legend(data_input=smri_t2_brain_plot_processed[["Avg_T2_White_coef"]],
+                    contrast_input = smri_t2_contrasts[1],site_mean_input = "mean")
+### plotting multiple sets of brain features
+smri_t2_brain_list <- map2(.x = smri_t2_brain_plot_processed,.y = smri_t2_contrasts, 
+          ~Desterieux_one_site_no_legend(data_input =  .x, contrast_input = .y,site_mean_input ="mean"))
+
+smri_t2_brain_aligned_list <- map(smri_t2_brain_list,"labeled_aligned_plots")
+### aligning figures
+smri_t2_all_plots <- ggpubr::ggarrange(plotlist=smri_t2_brain_aligned_list, nrow = length(SST_contrasts))
+
+smri_t2_all_plots
+```
+
+
+## T1 aseg
+
+```{r}
+smri_t1_aseg_contrasts <- c( "Vol_ASEG_","Avg_T1_ASEG_Vol_")
+
+smri_t1_aseg_contrasts_coefs <- paste0(smri_t1_aseg_contrasts,"coef")
+
+processed_coefs_baseline_smri_t1_aseg <- processed_coefs_baseline[smri_t1_aseg_contrasts_coefs]
+
+
+```
+
+
+The following function only plot the aseg atlas
+
+```{r}
+aseg_plot_data_pred <- function(table_input, contrast_input) {
+      brainPlotTib <- table_input %>%
+    rename(label = term) %>%  
+    mutate(.,label = str_remove_all(label, contrast_input)) %>%
+  #  mutate(.,label = str_replace_all(variable, str_type, '')) %>%
+      mutate(.,label = str_replace_all(label, '\\.', '-')) %>%
+      mutate(.,label = str_replace_all(label, 'Brain-Stem', 'brain-stem')) %>% 
+      mutate(.,label = str_replace_all(label, 'Right-Cerebellum-Cortex', 'right-cerebellum-cortex')) %>%
+      mutate(.,label = str_replace_all(label, 'roi_', ''))
+
+ggsegAseg_resp <- ggseg::aseg$data %>% as_tibble %>% 
+        select(label) %>% 
+        na.omit() %>%
+        left_join(brainPlotTib, by = "label")
+return(ggsegAseg_resp)
+}
+
+aseg_one_site_no_legend <- function(table_input,contrast_input,site_mean_input){
+  aligned_plot_label <- plotting_names$plotting_name_space[which(plotting_names$Original_name==contrast_input)]
+  
+ estimate_name <- paste0(site_mean_input,"_estimate")
+  ggsegAseg_resp <- table_input%>%
+                          select(all_of(c("label",estimate_name)))
+  ##aes_string is an old function use aes
+Aseg_plot <- ggplot(data = ggsegAseg_resp)+
+  geom_brain( atlas = aseg, 
+              mapping = aes(fill = .data[[estimate_name]]),
+              side = "coronal",
+              colour="black",
+              size=0.3)+ 
+        theme_void() +
+        scale_fill_gradientn( #colours=kovesi.rainbow(200), guide = "colourbar"
+                             colours=brain_plot_color ,na.value ="transparent",
+                           breaks=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                           labels=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                    limits=c(-0.4,0.4))  +
+        theme(legend.position = "none") +
+        guides(fill = guide_colourbar(barwidth = 0.5, barheight = 3, title = NULL))+
+  ggtitle(aligned_plot_label) +
+          theme(legend.position = "none",plot.title = element_text( size=20)) 
+### combine dest plot with aseg plot together with labels
+
+return(Aseg_plot)
+}
+
+```
+
+```{r}
+##matching the names with the package
+smri_t1_aseg_brain_plot_processed <- map2(.x=processed_coefs_baseline_smri_t1_aseg,.y=smri_t1_aseg_contrasts,
+                                   ~aseg_plot_data_pred(table_input = .x,contrast_input=.y))
+
+
+aseg_one_site_no_legend(table_input=smri_t1_aseg_brain_plot_processed[["Vol_ASEG_coef"]],contrast_input =smri_t1_aseg_contrasts[1],site_mean_input = "mean")
+
+### plotting multiple sets of brain features
+smri_t1_aseg_brain_list <- map2(.x = smri_t1_aseg_brain_plot_processed,.y = smri_t1_aseg_contrasts, 
+          ~aseg_one_site_no_legend(table_input =  .x, contrast_input = .y,site_mean_input ="mean"))
+
+### aligning figures
+smri_t1_aseg_all_plots <- ggpubr::ggarrange(plotlist=smri_t1_aseg_brain_list, 
+                                            ncol =length(smri_t1_aseg_contrasts))
+
+smri_t1_aseg_all_plots
+```
+
+## T2 aseg
+
+```{r}
+smri_t2_aseg_contrasts <- c( "Avg_T2_ASEG_")
+
+smri_t2_aseg_contrasts_coefs <- paste0(smri_t2_aseg_contrasts,"coef")
+
+processed_coefs_baseline_smri_t2_aseg <- processed_coefs_baseline[smri_t2_aseg_contrasts_coefs]
+
+
+```
+
+
+```{r, fig.height =2, fig.width = 5.5}
+##matching the names with the package
+smri_t2_aseg_brain_plot_processed <- map2(.x=processed_coefs_baseline_smri_t2_aseg,.y=smri_t2_aseg_contrasts,
+                                   ~aseg_plot_data_pred(table_input = .x,contrast_input=.y))
+
+
+aseg_one_site_no_legend(table_input=smri_t2_aseg_brain_plot_processed[["Avg_T2_ASEG_coef"]],contrast_input =smri_t2_aseg_contrasts[1],site_mean_input = "mean")
+### plotting multiple sets of brain features
+smri_t2_aseg_brain_list <- map2(.x = smri_t2_aseg_brain_plot_processed,.y = smri_t2_aseg_contrasts, 
+          ~aseg_one_site_no_legend(table_input =  .x, contrast_input = .y,site_mean_input ="mean"))
+
+smri_t2_aseg_all_plots <- ggpubr::ggarrange(plotlist=smri_t2_aseg_brain_list, 
+                                            ncol =length(smri_t2_aseg_contrasts))
+
+smri_t2_aseg_all_plots
+### aligning figures
+smri_t1_t2_aseg_all_plots <-gridExtra::grid.arrange(smri_t1_aseg_all_plots,smri_t2_aseg_all_plots,nrow = 1, ncol = 2, widths = c(6, 3)) 
+
+smri_t1_t2_aseg_all_plots
+```
+
+## rsmri gorden aseg
+
+Gorden atlas u=is used only here.
+
+```{r}
+processed_coefs_baseline_rsmri_gordon_aseg <- processed_coefs_baseline[["rsmri_gordon_aseg_coef"]]
+
+aseg_vec <- c("Left-Cerebellum-Cortex","Left-Thalamus-Proper","Left-Caudate","Left-Putamen","Left-Pallidum","brain-stem","Left-Hippocampus","Left-Amygdala","Left-Accumbens-area","Left-VentralDC","right-cerebellum-cortex","Right-Thalamus-Proper","Right-Caudate","Right-Putamen","Right-Pallidum","Right-Hippocampus","Right-Amygdala","Right-Accumbens-area","Right-VentralDC")      
+
+gordon_table <- ggsegGordon::gordon %>% as_tibble
+
+gordon_aseg_plot_data_pred <- function(table_input, gordon_contrast="rsmri_var_gordon_ROI_",
+                                       aseg_contrast="rsmri_var_aseg_ROI_") {
+      brainPlotTib <- table_input %>%
+    rename(region = term) %>%  
+    mutate(.,region = str_remove_all(region, gordon_contrast)) %>%
+     mutate(.,region = str_remove_all(region, aseg_contrast)) %>%   
+  #  mutate(.,label = str_replace_all(variable, str_type, '')) %>%
+      mutate(.,region = str_replace_all(region, '\\.', '-')) %>%
+      mutate(.,region = str_replace_all(region, 'Brain-Stem', 'brain-stem')) %>% 
+      mutate(.,region = str_replace_all(region, 'Right-Cerebellum-Cortex', 'right-cerebellum-cortex')) %>%
+      mutate(.,region = str_replace_all(region, 'roi_', ''))
+
+ggseggordon_resp <- ggsegGordon::gordon %>% as_tibble %>% 
+    #    select(region) %>% 
+    #   rename(label = region)%>%
+        na.omit() %>%
+        left_join(brainPlotTib, by = "region") 
+#%>% 
+#  distinct(label, .keep_all = TRUE)  ## get rid of the duplicated region names 
+ asegPlotTib  <-  brainPlotTib %>%
+    rename(label = region)  %>%
+    filter(label %in% aseg_vec)
+
+ggsegAseg_resp <- ggseg::aseg$data %>% as_tibble %>% 
+        select(label) %>% 
+        na.omit() %>%
+        left_join(asegPlotTib, by = "label")
+return(list(ggseggordon_resp=ggseggordon_resp,
+            ggsegAseg_resp=ggsegAseg_resp))
+}
+
+gordon_aseg_one_site <- function(list_input,site_mean_input){
+   aligned_plot_label <- plotting_names$plotting_name_space[which(plotting_names$Original_name=="rsmri_gordon_aseg_data")]
+  
+  
+ estimate_name <- paste0(site_mean_input,"_estimate")
+  ggseggordon_resp <- list_input[["ggseggordon_resp"]]
+  ggsegAseg_resp <- list_input[["ggsegAseg_resp"]]%>%
+                          select(all_of(c("label",estimate_name)))
+  ##aes_string is an old function use aes
+  gordon_plot <- ggseggordon_resp %>%
+           select( -geometry) %>%
+    ggseg(atlas = gordon, 
+              mapping = aes(fill = .data[[estimate_name]]),
+              colour="black",
+              size=0.3
+        ) + 
+  scale_fill_brain("gordon", package = "ggsegGordon")+ 
+        theme_void() +
+        scale_fill_gradientn( #colours=kovesi.rainbow(200), guide = "colourbar"
+                             colours=brain_plot_color ,na.value ="transparent",
+                           breaks=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                           labels=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                    limits=c(-0.4,0.4))  +
+        theme(legend.position = "none") +
+        labs(title =estimate_name) +
+        labs(title =NULL) 
+
+
+
+
+Aseg_plot <- ggplot(data = ggsegAseg_resp)+
+  geom_brain( atlas = aseg, 
+              mapping = aes(fill = .data[[estimate_name]]),
+              side = "coronal",
+              colour="black",
+              size=0.3)+ 
+        theme_void() +
+        scale_fill_gradientn( #colours=kovesi.rainbow(200), guide = "colourbar"
+                             colours=brain_plot_color ,na.value ="transparent",
+                           breaks=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                           labels=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                    limits=c(-0.4,0.4))  +
+        theme(legend.position = "none") +
+        guides(fill = guide_colourbar(barwidth = 0.5, barheight = 3, title = NULL)) 
+
+aligned_plots <- gridExtra::grid.arrange(gordon_plot,Aseg_plot,nrow = 1, ncol = 2, widths = c(8, 1.5))
+
+modality_label <- ggdraw() + 
+  draw_label(
+    aligned_plot_label,
+  #  fontface = 'bold',
+    x = 0,
+    hjust = 0
+  ) +
+  theme(
+    # add margin on the left of the drawing canvas,
+    # so title is aligned with left edge of first plot
+    plot.margin = margin(t = 0, r =0, b = 0, l = 3.5, unit = "cm")
+  )
+  labeled_aligned_plots<- plot_grid(modality_label,aligned_plots,
+                                       ncol = 2 , 
+                                       rel_heights = c(0.01, 10))
+
+return(list(gordon_plot=gordon_plot,
+            Aseg_plot=Aseg_plot,
+            labeled_aligned_plots=labeled_aligned_plots))
+}
+
+rsmri_gordon_aseg_brain_plot_processed <- gordon_aseg_plot_data_pred(table_input = processed_coefs_baseline_rsmri_gordon_aseg)
+
+
+gordon_aseg_plot <- gordon_aseg_one_site(list_input=rsmri_gordon_aseg_brain_plot_processed,site_mean_input = "mean")
+
+gordon_aseg_plot
+```
+
+ 
+## subnet for rsmri
+
+
+Plotting the heat map for the sub-networks of rsmri.
+
+```{r}
+## sort oout the name pattern, divide the combined names into two individual names
+processed_coefs_baseline_rsmri_subnet_aseg <- processed_coefs_baseline[["rsmri_subnet_coef"]]
+
+subnet_aseg_vec <- processed_coefs_baseline_rsmri_subnet_aseg$term%>% str_detect(paste0("^","Auditory"))
+
+subnet_aseg_names <- processed_coefs_baseline_rsmri_subnet_aseg$term[which(subnet_aseg_vec==TRUE)]%>%
+                     str_remove_all("Auditory")
+## end with
+subnet_vec <- processed_coefs_baseline_rsmri_subnet_aseg$term%>% str_detect(paste0("LeftCerebellumCortex","$"))
+
+subnet_names <- processed_coefs_baseline_rsmri_subnet_aseg$term[which(subnet_vec==TRUE)]%>%
+                     str_remove_all("LeftCerebellumCortex")
+## instead of create a table matrix 
+## trying to create a longer version of data table directly
+
+subnet_aseg_data_processing <- function(table_input,site_mean_input="mean"){
+  site_mean_names <- paste0(site_mean_input,"_estimate")
+  data_table <- table_input %>% select(all_of(c(site_mean_names,"term")))
+  aseg_names_vec <- data_table$term
+  subnet_names_vec <- data_table$term
+### remove the names not wanted
+### use loops because the name removal is accumulated
+ subnet_names_vec_removed <- subnet_names_vec
+ for(i in 1: length(subnet_aseg_names)){
+   subnet_names_vec_removed <- str_remove_all(subnet_names_vec_removed,subnet_aseg_names[i])
+ }
+ aseg_names_vec_removed <- aseg_names_vec
+ for(i in 1: length(subnet_names)){
+   aseg_names_vec_removed <- str_remove_all(aseg_names_vec_removed,subnet_names[i])
+ }
+ output_tibble  <- data_table %>% mutate(aseg_names = aseg_names_vec_removed)%>%
+                                  mutate(subnet_names = subnet_names_vec_removed)
+ return(output_tibble)
+}
+
+rsmri_subnet_aseg_brain_plot_processed <-subnet_aseg_data_processing(
+                                         table_input = processed_coefs_baseline_rsmri_subnet_aseg) 
+
+processed_coefs_baseline_rsmri_subnet_aseg_range <- range(rsmri_subnet_aseg_brain_plot_processed$mean_estimate)
+
+rsmri_subnet_title <- plotting_names$plotting_name[which(plotting_names$Original_name=="rsmri_subnet")]
+### plotting the heat map
+rsmri_subnet_plot <- ggplot(data =rsmri_subnet_aseg_brain_plot_processed, aes(x=aseg_names, y=subnet_names, fill=mean_estimate)) +
+ geom_tile(color = "white")+
+   labs(x=NULL,y=NULL,title=paste0(rsmri_subnet_title))+
+    scale_fill_gradientn( #colours=kovesi.rainbow(200), guide = "colourbar"
+                             colours=brain_plot_color ,na.value ="transparent",
+                           breaks=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                           labels=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                    limits=c(-0.4,0.4))  +
+  #scale_fill_gradientn( #colours=kovesi.rainbow(200), guide = "colourbar"
+  #   colours = brain_plot_color  ,na.value = "transparrent",
+  #                         breaks=c(-0.06,-0.03,0,0.03,0.06),
+  #                                  labels=c(-0.06,-0.03,0,0.03,0.06),
+  #                  limits=processed_coefs_baseline_rsmri_subnet_aseg_range,name="Parameter\nEstimation",
+  #                  space = "Lab")  +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 12, hjust = 1),
+      axis.text.y = element_text(angle = 45, vjust = 1, size = 12, hjust = 1),
+     #axis.text.x = element_blank(),
+     #axis.text.y = element_blank(),
+    plot.title = element_text(size=17),
+    legend.position = "none")+
+ coord_fixed()
+
+rsmri_subnet_plot
+```
+## bar plots for smri mean total
+
+
+### T1
+
+
+```{r}
+processed_coefs_baseline_smri_T1_mean_total <- processed_coefs_baseline[["smri_T1_mean_total_coef"]]
+
+### adding the plotting names
+smri_t1_mean_total_plotting_names <- c("Cortical gray matter total area","Cortical gray matter total volume","Cortical gray matter mean thickness","Mean sulcal depth", "Average T1 intensity white matter surface","Average T1 intensity gray matter surface","Difference between T1 white and gray matter"," Subcortical gray volume","Average T1 intensity of cerebellum")
+
+
+
+processed_coefs_baseline_smri_T1_mean_total <- processed_coefs_baseline_smri_T1_mean_total%>%
+                                          mutate(long_plotting_names = smri_t1_mean_total_plotting_names)
+
+
+mean_total_bar_plot <- function(data_input, contrast_names,site_mean_input="mean"){
+  plot_title <- plotting_names$plotting_name[which(plotting_names$Original_name==contrast_names)]
+
+  estimate_name <- paste0(site_mean_input,"_estimate")
+  ### arrange the data from small to large
+  data_input <- data_input %>%
+                select(all_of(c("long_plotting_names",estimate_name)))%>%
+                arrange(.data[[estimate_name]])
+  ordered_plotting_names <- data_input$long_plotting_names
+  ## change the order of the plot based on the magnitude of the coefficient estimate
+  data_input<- data_input%>%
+                  mutate(long_plotting_names = as.factor(long_plotting_names))%>%
+                  mutate(long_plotting_names = factor(long_plotting_names,
+                                                      levels =ordered_plotting_names))
+  
+  bar_plot <- ggplot(data_input, aes(x=.data[[estimate_name]], y=long_plotting_names)) +
+  geom_bar(stat="identity")+
+  theme_classic() + 
+    labs(title = plot_title)+
+theme(
+  axis.title.x = element_blank(),
+  axis.text.x = element_text(size = 12),
+  axis.title.y = element_blank(),
+  axis.text.y = element_text(size = 12),
+  legend.text = element_blank(),
+  plot.title = element_text(size=15))
+  return(bar_plot)
+}
+
+smri_T1_mean_total_bar_plot <- mean_total_bar_plot(data_input=processed_coefs_baseline_smri_T1_mean_total,
+                                                  contrast_names="smri_T1_mean_total_data",
+                                                  site_mean_input="mean")
+smri_T1_mean_total_bar_plot
+```
+
+
+
+### T2
+
+```{r, fig.height =6, fig.width = 6}
+
+
+processed_coefs_baseline_smri_T2_mean_total <- processed_coefs_baseline[["smri_T2_mean_total_coef"]]
+
+smri_t2_mean_total_plotting_names <- c("Average T2 intensity white matter surface",
+                                       "Average T2 intensity gray matter surface",
+                                       "Difference between T2 white and gray matter",
+                                       "Average T2 intensity of cerebellum")
+
+
+
+processed_coefs_baseline_smri_T2_mean_total <- processed_coefs_baseline_smri_T2_mean_total%>%
+                                          mutate(long_plotting_names = smri_t2_mean_total_plotting_names)
+
+
+
+smri_T2_mean_total_bar_plot <- mean_total_bar_plot(data_input=processed_coefs_baseline_smri_T2_mean_total,
+                                                  contrast_names="smri_T2_mean_total_data",
+                                                  site_mean_input="mean")
+smri_T2_mean_total_bar_plot
+```
+
+## combined plot for baseline
+
+```{r,warning=FALSE, fig.align = "center", fig.height =8, fig.width = 7,out.height="50%"}
+all_plot_baseline_left <- gridExtra::grid.arrange(nback_all_plots,MID_all_plots, ncol = 1) 
+
+all_plot_baseline_left
+
+
+gordon_aseg_aligned_plot <- list(gordon_aseg_plot=gordon_aseg_plot[["labeled_aligned_plots"]])
+
+baseline_right_individual_list <- append(SST_brain_aligned_list,
+                                         smri_t1_brain_aligned_list)%>%
+                                  append(.,smri_t2_brain_aligned_list)%>%
+                                  append(.,gordon_aseg_aligned_plot)
+
+baseline_right_part_plot <- ggpubr::ggarrange(plotlist=baseline_right_individual_list, nrow = 19)
+
+baseline_right_part_plot
+#baseline_right_list_all <- list(baseline_right_part_plot=baseline_right_part_plot,
+#                           smri_t1_t2_aseg_all_plots=smri_t1_t2_aseg_all_plots,
+#                           DTI_baseline_plot=DTI_baseline_plot)
+#all_plot_baseline_right <- plot_grid(plotlist=baseline_right_list_all, ncol = 1,
+#                                     rel_heights = c(10,1,1)) 
+
+
+#all_plot_baseline_right
+smri_t1_t2_aseg_all_plots
+
+DTI_baseline_plot
+```
+
+```{r,fig.width = 5,fig.height=4.5}
+baseline_rsmri_within_avg_plot
+
+```
+
+```{r,fig.width = 6,fig.height=4.5}
+rsmri_subnet_plot
+
+```
+
+
+
+```{r,fig.width = 6,fig.height=2}
+smri_T1_mean_total_bar_plot
+```
+
+
+```{r,fig.width = 6,fig.height=2}
+
+smri_T2_mean_total_bar_plot
+```
+
+
+# Brain plots for followup
+
+## NBack contrasts
+
+Extract the coefficients for all the NBack contrasts.
+
+
+```{r}
+
+processed_coefs_followup_nback <- processed_coefs_followup[nback_contrasts_coefs]
+
+
+```
+
+
+
+```{r,warning=FALSE, fig.align = "center", fig.height =5.5, fig.width = 7,out.height="50%"}
+##matching the names with the package
+nback_brain_plot_processed_followup <- map2(.x=processed_coefs_followup_nback,.y=nback_contrasts,
+                                   ~brain_plot_data_pred(table_input = .x,contrast_input=.y))
+#brain_plot_nback_all_site
+
+### plotting multiple sets of brain features
+nback_brain_list_followup <- map2(.x = nback_brain_plot_processed_followup,.y = nback_contrasts, 
+         ~Desterieux_aseg_one_site_no_legend(list_input = .x, contrast_input = .y,site_mean_input = "mean"))
+
+nback_brain_aligned_list_followup <- map(nback_brain_list_followup,"labeled_aligned_plots")
+### align the plots
+nback_all_plots_followup <- ggpubr::ggarrange(plotlist=nback_brain_aligned_list_followup, nrow = length(nback_contrasts),common.legend = TRUE,legend.grob = dext_aseg_plot_legend,legend = "top")
+
+nback_all_plots_followup
+```
+
+## MID contrasts
+
+```{r}
+
+processed_coefs_followup_MID <- processed_coefs_followup[MID_contrasts_coefs]
+
+```
+
+
+
+```{r,warning=FALSE, fig.align = "center", fig.height =6, fig.width = 7}
+
+##matching the names with the package
+MID_brain_plot_processed_followup <- map2(.x=processed_coefs_followup_MID,.y=MID_contrasts,
+                                   ~brain_plot_data_pred(table_input = .x,contrast_input=.y))
+
+### plotting multiple sets of brain features
+MID_brain_list_followup <- map2(.x = MID_brain_plot_processed_followup,.y = MID_contrasts, 
+       ~Desterieux_aseg_one_site_no_legend(list_input = .x, contrast_input = .y,site_mean_input = "mean"))
+
+MID_brain_aligned_list_followup <- map(MID_brain_list_followup,"labeled_aligned_plots")
+### align the plots
+MID_all_plots_followup <- ggpubr::ggarrange(plotlist=MID_brain_aligned_list_followup, 
+                                            nrow = length(MID_contrasts))
+
+MID_all_plots_followup
+```
+
+## SST contrasts
+
+```{r}
+processed_coefs_followup_SST <- processed_coefs_followup[SST_contrasts_coefs]
+
+
+```
+
+
+
+```{r,warning=FALSE, fig.align = "center", fig.height =5, fig.width = 7}
+##matching the names with the package
+SST_brain_plot_processed_followup <- map2(.x=processed_coefs_followup_SST,.y=SST_contrasts,
+                                   ~brain_plot_data_pred(table_input = .x,contrast_input=.y))
+
+### plotting multiple sets of brain features
+SST_brain_list_followup <- map2(.x = SST_brain_plot_processed_followup,.y = SST_contrasts, 
+                  ~Desterieux_aseg_one_site_no_legend(list_input = .x, contrast_input = .y,site_mean_input = "mean"))
+
+SST_brain_aligned_list_followup <- map(SST_brain_list_followup,"labeled_aligned_plots")
+### align the plots
+SST_all_plots_followup <- ggpubr::ggarrange(plotlist=SST_brain_aligned_list_followup, 
+                                            nrow = length(SST_contrasts))
+
+SST_all_plots_followup
+```
+
+
+## rsmri within avg
+
+```{r}
+
+processed_coefs_followup_rsmri_within_avg <- processed_coefs_followup[["rsmri_within_avg_coef"]]
+
+followup_rsmri_within_avg_matrix <- matrix_prepare(data_list=processed_coefs_followup_rsmri_within_avg)
+
+colnames(followup_rsmri_within_avg_matrix) <- rsmri_within_avg_roi_names_all
+rownames(followup_rsmri_within_avg_matrix)<- rsmri_within_avg_roi_names_all
+## change the matrix into long format data table
+followup_rsmri_within_avg_matrix_tibble <-followup_rsmri_within_avg_matrix %>% 
+                                          as.data.frame()%>%
+                                          mutate(roi = rsmri_within_avg_roi_names_all)%>%
+                                          reshape2::melt(.,id.vars="roi")
+
+processed_coefs_followup_rsmri_within_avg_range <- processed_coefs_followup_rsmri_within_avg$mean_estimate%>% range()
+## plotting the heat map
+
+
+followup_rsmri_within_avg_plot <-ggplot(data =followup_rsmri_within_avg_matrix_tibble, aes(x=variable, y=roi, fill=value)) +
+ geom_tile(color = "white")+
+   labs(x=NULL,y=NULL,title=paste0(rsmri_within_avg_title ))+
+    scale_fill_gradientn( #colours=kovesi.rainbow(200), guide = "colourbar"
+                             colours=brain_plot_color ,na.value = "gray50",
+                           breaks=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                           labels=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                    limits=c(-0.4,0.4))  +
+    #  scale_fill_gradientn( #colours=kovesi.rainbow(200), guide = "colourbar"
+    #                         colours = brain_plot_color   ,na.value = "gray50",
+    #                       breaks=c(0.12,0.05,0,-0.05,-0.1),
+    #                       labels=c(0.12,0.05,0,-0.05,-0.1),
+    #                limit = plot_range, space = "Lab", 
+   #name="Parameter\nEstimation")  +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 12, hjust = 1),
+      axis.text.y = element_text(angle = 45, vjust = 1, size = 12, hjust = 1),
+     #axis.text.x = element_blank(),
+     #axis.text.y = element_blank(),
+    plot.title = element_text(size=17),
+    legend.position = "none")+
+ coord_fixed()
+
+
+followup_rsmri_within_avg_plot
+
+```
+
+## DTI
+
+
+
+```{r}
+
+processed_coefs_followup_DTI <- processed_coefs_followup[["DTI_coef"]]
+
+processed_coefs_followup_DTI <- processed_coefs_followup_DTI %>%  
+                  mutate(.,Hagler = str_replace_all(term, "FA_", ''))%>%
+                  select(-term)
+
+
+DTI_followup_plot <- ggsegJHU::jhu %>% as_tibble %>% 
+      left_join(HaglerToJhu, by = c("hemi","region","side","label")) %>% 
+      left_join(processed_coefs_followup_DTI, by = "Hagler") %>% 
+     select( -geometry) %>%
+     ggseg(atlas = jhu, 
+            mapping = aes(fill = mean_estimate),
+            colour="black",
+              size = 0.3)  +
+  scale_fill_brain("jhu", package = "ggsegJHU")+ 
+      theme_void() +
+    theme(text = element_text(size=30),
+          legend.position = "none") + 
+    labs(title = "DTI") +
+   scale_fill_gradientn( #colours=kovesi.rainbow(200), guide = "colourbar"
+                             colours=brain_plot_color ,na.value ="transparent",
+                           breaks=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                           labels=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                    limits=c(-0.4,0.4))  +
+      guides(fill = guide_colourbar(barwidth = 1.5, barheight = 9, title = NULL))
+
+
+DTI_followup_plot
+```
+
+## smri_T1
+
+```{r}
+processed_coefs_followup_smri_t1 <- processed_coefs_followup[smri_t1_contrasts_coefs]
+```
+
+```{r, fig.align = "center", fig.height =5, fig.width = 7}
+##matching the names with the package
+smri_t1_brain_plot_processed_followup <- map2(.x=processed_coefs_followup_smri_t1,.y=smri_t1_contrasts,
+                                   ~Desterieux_data_pred(table_input = .x,contrast_input=.y))
+### plotting multiple sets of brain features
+smri_t1_brain_list_followup <- map2(.x = smri_t1_brain_plot_processed_followup,.y = smri_t1_contrasts, 
+          ~Desterieux_one_site_no_legend(data_input =  .x, contrast_input = .y,site_mean_input ="mean"))
+
+smri_t1_brain_aligned_list_followup <- map(smri_t1_brain_list_followup,"labeled_aligned_plots")
+### align the plots
+
+smri_t1_all_plots_followup <- ggpubr::ggarrange(plotlist=smri_t1_brain_aligned_list_followup, nrow = length(SST_contrasts))
+
+smri_t1_all_plots_followup
+```
+
+
+## smri T2
+
+```{r}
+processed_coefs_followup_smri_t2 <- processed_coefs_followup[smri_t2_contrasts_coefs]
+```
+
+
+
+```{r, fig.align = "center", fig.height =5, fig.width = 7}
+##matching the names with the package
+smri_t2_brain_plot_processed_followup <- map2(.x=processed_coefs_followup_smri_t2,.y=smri_t2_contrasts,
+                                   ~Desterieux_data_pred(table_input = .x,contrast_input=.y))
+
+### plotting multiple sets of brain features
+smri_t2_brain_list_followup <- map2(.x = smri_t2_brain_plot_processed_followup,.y = smri_t2_contrasts, 
+          ~Desterieux_one_site_no_legend(data_input =  .x, contrast_input = .y,site_mean_input ="mean"))
+
+smri_t2_brain_aligned_list_followup <- map(smri_t2_brain_list_followup,"labeled_aligned_plots")
+### align the plots
+
+smri_t2_all_plots_followup <- ggpubr::ggarrange(plotlist=smri_t2_brain_aligned_list_followup, 
+                                                nrow = length(SST_contrasts))
+
+smri_t2_all_plots_followup
+```
+
+## T1 aseg
+
+```{r}
+
+processed_coefs_followup_smri_t1_aseg <- processed_coefs_followup[smri_t1_aseg_contrasts_coefs]
+
+
+```
+
+
+```{r}
+
+##matching the names with the package
+smri_t1_aseg_brain_plot_processed_followup <- map2(.x=processed_coefs_followup_smri_t1_aseg,.y=smri_t1_aseg_contrasts,
+                                   ~aseg_plot_data_pred(table_input = .x,contrast_input=.y))
+
+### plotting multiple sets of brain features
+smri_t1_aseg_brain_list_followup <- map2(.x = smri_t1_aseg_brain_plot_processed_followup,
+                                         .y = smri_t1_aseg_contrasts, 
+          ~aseg_one_site_no_legend(table_input =  .x, contrast_input = .y,site_mean_input ="mean"))
+
+### align the plots
+smri_t1_aseg_all_plots_followup <- ggpubr::ggarrange(plotlist=smri_t1_aseg_brain_list_followup, 
+                                            ncol =length(smri_t1_aseg_contrasts))
+
+smri_t1_aseg_all_plots_followup
+```
+
+## T2 aseg
+
+```{r}
+processed_coefs_followup_smri_t2_aseg <- processed_coefs_followup[smri_t2_aseg_contrasts_coefs]
+```
+
+
+```{r, fig.height =2, fig.width = 5.5}
+##matching the names with the package
+smri_t2_aseg_brain_plot_processed_followup <- map2(.x=processed_coefs_followup_smri_t2_aseg,.y=smri_t2_aseg_contrasts,
+                                   ~aseg_plot_data_pred(table_input = .x,contrast_input=.y))
+### plotting multiple sets of brain features
+smri_t2_aseg_brain_list_followup <- map2(.x = smri_t2_aseg_brain_plot_processed_followup,
+                                         .y = smri_t2_aseg_contrasts, 
+          ~aseg_one_site_no_legend(table_input =  .x, contrast_input = .y,site_mean_input ="mean"))
+
+smri_t2_aseg_all_plots_followup <- ggpubr::ggarrange(plotlist=smri_t2_aseg_brain_list_followup, 
+                                            ncol =length(smri_t2_aseg_contrasts))
+
+smri_t2_aseg_all_plots_followup
+### align the plots
+
+smri_t1_t2_aseg_all_plots_followup <-gridExtra::grid.arrange(smri_t1_aseg_all_plots_followup,
+                                      smri_t2_aseg_all_plots_followup,nrow = 1, ncol = 2, widths = c(6, 3)) 
+
+smri_t1_t2_aseg_all_plots_followup
+```
+
+
+## rsmri gorden aseg
+
+```{r}
+processed_coefs_followup_rsmri_gordon_aseg <- processed_coefs_followup[["rsmri_gordon_aseg_coef"]]
+
+
+rsmri_gordon_aseg_brain_plot_processed_followup <- gordon_aseg_plot_data_pred(table_input = processed_coefs_followup_rsmri_gordon_aseg)
+
+
+gordon_aseg_plot_followup <- gordon_aseg_one_site(list_input=rsmri_gordon_aseg_brain_plot_processed_followup,site_mean_input = "mean")
+
+gordon_aseg_plot_followup
+```
+
+## subnet for rsmri
+
+```{r}
+processed_coefs_followup_rsmri_subnet_aseg <- processed_coefs_followup[["rsmri_subnet_coef"]]
+
+
+
+rsmri_subnet_aseg_brain_plot_processed_followup <-subnet_aseg_data_processing(
+                                         table_input = processed_coefs_followup_rsmri_subnet_aseg) 
+
+
+rsmri_subnet_plot_followup <- ggplot(data =rsmri_subnet_aseg_brain_plot_processed_followup, 
+                                     aes(x=aseg_names, y=subnet_names, fill=mean_estimate)) +
+geom_tile(color = "white")+
+   labs(x=NULL,y=NULL,title=paste0(rsmri_subnet_title))+
+    scale_fill_gradientn( #colours=kovesi.rainbow(200), guide = "colourbar"
+                             colours=brain_plot_color ,na.value ="transparent",
+                           breaks=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                           labels=c(-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4),
+                    limits=c(-0.4,0.4))  +
+  #scale_fill_gradientn( #colours=kovesi.rainbow(200), guide = "colourbar"
+  #   colours = brain_plot_color  ,na.value = "transparrent",
+  #                         breaks=c(-0.06,-0.03,0,0.03,0.06),
+  #                                  labels=c(-0.06,-0.03,0,0.03,0.06),
+  #                  limits=processed_coefs_baseline_rsmri_subnet_aseg_range,name="Parameter\nEstimation",
+  #                  space = "Lab")  +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 12, hjust = 1),
+      axis.text.y = element_text(angle = 45, vjust = 1, size = 12, hjust = 1),
+     #axis.text.x = element_blank(),
+     #axis.text.y = element_blank(),
+    plot.title = element_text(size=17),
+    legend.position = "none")+
+ coord_fixed()
+
+rsmri_subnet_plot_followup
+```
+
+
+## bar plots for smri mean total
+
+
+### T1
+
+
+```{r}
+processed_coefs_followup_smri_T1_mean_total <- processed_coefs_followup[["smri_T1_mean_total_coef"]]
+
+processed_coefs_followup_smri_T1_mean_total <- processed_coefs_followup_smri_T1_mean_total%>%
+                                          mutate(long_plotting_names = smri_t1_mean_total_plotting_names)
+
+
+smri_T1_mean_total_bar_plot_followup <- mean_total_bar_plot(data_input=processed_coefs_followup_smri_T1_mean_total,
+                                                  contrast_names="smri_T1_mean_total_data",
+                                                  site_mean_input="mean")
+smri_T1_mean_total_bar_plot_followup
+```
+
+
+### T2
+
+```{r, fig.height =6, fig.width = 6}
+
+
+processed_coefs_followup_smri_T2_mean_total <- processed_coefs_followup[["smri_T2_mean_total_coef"]]
+
+processed_coefs_followup_smri_T2_mean_total <- processed_coefs_followup_smri_T2_mean_total%>%
+                                          mutate(long_plotting_names = smri_t2_mean_total_plotting_names)
+
+
+
+smri_T2_mean_total_bar_plot_followup <- mean_total_bar_plot(data_input=processed_coefs_followup_smri_T2_mean_total,
+                                                  contrast_names="smri_T2_mean_total_data",
+                                                  site_mean_input="mean")
+smri_T2_mean_total_bar_plot_followup
+```
+
+## combined plot for followup
+
+```{r,warning=FALSE, fig.align = "center", fig.height =8, fig.width = 7,out.height="50%"}
+all_plot_followup_left <- gridExtra::grid.arrange(nback_all_plots_followup,
+                                                  MID_all_plots_followup, ncol = 1) 
+
+all_plot_followup_left
+
+
+gordon_aseg_aligned_plot_followup <- list(gordon_aseg_plot=
+                                            gordon_aseg_plot_followup[["labeled_aligned_plots"]])
+
+right_individual_list_followup <- append(SST_brain_aligned_list_followup,
+                                         smri_t1_brain_aligned_list_followup)%>%
+                                  append(.,smri_t2_brain_aligned_list_followup)%>%
+                                  append(.,gordon_aseg_aligned_plot_followup)
+
+right_part_plot_followup <- ggpubr::ggarrange(plotlist=right_individual_list_followup, 
+                                                       nrow = 19)
+
+right_part_plot_followup
+#baseline_right_list_all <- list(baseline_right_part_plot=baseline_right_part_plot,
+#                           smri_t1_t2_aseg_all_plots=smri_t1_t2_aseg_all_plots,
+#                           DTI_baseline_plot=DTI_baseline_plot)
+#all_plot_baseline_right <- plot_grid(plotlist=baseline_right_list_all, ncol = 1,
+#                                     rel_heights = c(10,1,1)) 
+
+
+#all_plot_baseline_right
+smri_t1_t2_aseg_all_plots_followup
+
+DTI_followup_plot
+
+
+
+
+```
+
+```{r,fig.width = 5,fig.height=4.5}
+
+followup_rsmri_within_avg_plot
+```
+
+
+```{r,fig.width = 6,fig.height=4.5}
+
+rsmri_subnet_plot_followup
+```
+
+```{r,fig.width = 6,fig.height=2}
+smri_T1_mean_total_bar_plot_followup
+```
+
+```{r,fig.width = 6,fig.height=2}
+smri_T2_mean_total_bar_plot_followup
+```
+
+

@@ -1,0 +1,538 @@
+---
+title: "Modelling DTI brain features with elastic net"
+author: "Yue Wang and Narun P"
+date:  "`r format(Sys.time(), '%d %b, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    number_sections: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r load_data, echo=FALSE}
+rm(list = ls(all.names = TRUE)) #will clear all objects includes hidden objects.
+gc() #free up memory and report the memory usage.
+```
+
+## Note
+Here we the ABCD release 4.0 data-set
+
+This file only compute the set of brain features called DTI. All the other brain features are computed with batch jobs in Nesi. Only DTI has a problem, so it is computed here.
+
+# Setting up the environment
+
+## Loading libraries
+The following libraries and default settings were used during the analysis:
+
+
+```{r load_libraries}
+options(scipen = 999)
+library("sva")
+library(tidyverse)
+library("tidymodels")
+##parallel map
+
+theme_set(theme_bw() + theme(panel.grid = element_blank()))
+## parallel processing number of cores register
+all_cores <- parallel::detectCores(logical = FALSE) - 10
+
+doParallel::registerDoParallel(cores = all_cores)
+
+```
+
+## Loading up paths
+
+We first loaded all of the relevant data files (not shown here as they refer to local directories):
+
+```{r loading_data, echo=FALSE}
+# from Qnap data windows
+#datafolder = "//np-qnapa/Data/ABCD/ABCD4/ABCD4SQL/"
+#scriptfold = "//np-qnapa/Data/Yue script/"
+#NDAfold = "//np-qnapa/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#utilFold = "//np-qnapa/Data/ABCD/ABCD3/Analysis/utilFunc/"
+#studyNDAFold = "//np-qnapa/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#outputfolder = "//np-qnapa/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+
+
+# linux
+#datafolder = "/media/Data/ABCD/ABCD4/ABCD4SQL/"
+#scriptfold = "/media/Data/Yue script/"
+#NDAfold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#utilFold = "/media/Data/ABCD/ABCD3/Analysis/utilFunc/"
+#studyNDAFold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#outputfolder = "/media/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+#featurefolder = "/media/Data/ABCD/ABCD4/Analysis/ManipulatedData/"
+
+## mac
+datafolder = "/Volumes/Data/ABCD/ABCD4/ABCD4SQL/"
+scriptfold = "/Volumes/Data/Yue script/"
+NDAfold = "/Volumes/Data/ABCD/ABCD4/ABCDStudyNDA/"
+utilFold = "/Volumes/Data/ABCD/ABCD3/Analysis/utilFunc/"
+studyNDAFold = "/Volumes/Data/ABCD/ABCD4/ABCDStudyNDA/"
+outputfolder = "/Volumes/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+featurefolder = "/Volumes/Data/ABCD/ABCD4/Analysis/ManipulatedData/"
+
+source(paste0(scriptfold,"stacking_gfactor_modelling/r_functions.R"))
+
+
+```
+
+
+# Data Preparation
+
+
+## load all of the files
+
+The aim is to compute the following:  
+DTI scan: FA from Hagler  atlas 
+ 
+```{r load_data2}
+
+###loading site and scanner information
+Siteinfo <-tibble::as_tibble(read.csv(paste0(datafolder, "ABCD_LT01_DATA_TABLE.csv")))
+
+DTI_FA23Tracks <- tibble::as_tibble(read.csv(paste0(featurefolder, "DTI_FA23Tracks.csv")) ) 
+
+### Note that we have not removed NA before Enet tuning to keep the most number of participants
+
+short_names <- tibble::as_tibble(read.csv(paste0(scriptfold,"ShortNames_all.csv") ))
+
+### load vision scan data, according to the documents some of the participants cannot see the IPad screen
+vision_idx <- tibble::as_tibble(read.table(paste0(NDAfold, "abcd_svs01.txt"),header = TRUE))
+
+
+```
+
+Change the wrong site manually based on the: "Release Notes: Adolescent Brain Cognitive Development Study ℠ (ABCD Study ® ) Data Release 4.0 Changes and Known Issues"
+
+only fixed the baseline and two year followup that is used in the analysis
+
+As ID is required not to show in the coding shared online, please refer to this file for the exact subject IDs.
+
+```{r}
+
+Siteinfo_fixed <- Siteinfo
+
+
+
+site_fix <- readRDS(paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/site_fix', '.RData'))
+
+
+for(i in 1:dim(site_fix)[1]){
+  fix_site_id  <- site_fix$SUBJECTKEY[i]
+  fix_site_event <- site_fix$EVENTNAME[i]
+  fix_site <- site_fix$SITE_ID_L[i]
+  Siteinfo_fixed$SITE_ID_L[which(Siteinfo_fixed$SUBJECTKEY== fix_site_id& Siteinfo_fixed$EVENTNAME == fix_site_event)] <- fix_site
+}
+
+Siteinfo <-Siteinfo_fixed 
+
+
+
+```
+
+
+## Join all the data sets
+
+```{r}
+
+vision_idx <- vision_idx[-1,]%>% mutate(SUBJECTKEY=subjectkey)%>%
+                                mutate(EVENTNAME=eventname)
+
+data_all <- plyr::join_all(list(DTI_FA23Tracks,
+                                Siteinfo,
+                                vision_idx), 
+                           by=c('SUBJECTKEY','EVENTNAME'), type='full')
+
+```
+
+## filter out the participants that have problems with vision
+
+
+54 subjects
+
+```{r}
+data_removed <- data_all %>% filter(snellen_va_y == 0 | snellen_va_y == 1 | vis_flg == 2)
+
+removed_subj <- data_removed$SUBJECTKEY
+data_all <- data_all %>% filter(!SUBJECTKEY %in% removed_subj)
+
+length(removed_subj)
+```
+
+## Remove participants within the same family took measurements in different sites
+
+### Loading Family relationship ID
+
+```{r, cache = FALSE, warning=FALSE}
+ACS <-read_csv(paste0(datafolder,"ACSPSW03_DATA_TABLE.csv")) 
+#knitr::kable(glimpse(ACS))
+
+#race_ethnicity
+#1 = White; 2 = Black; 3 = Hispanic; 4 = Asian; 5 = Other
+
+# guardian-report relationship
+# Relationship of the participant in his or her family
+# 0 = single; 1 = sibling; 2 = twin; 3 = triplet
+# ACS %>% count(REL_RELATIONSHIP)
+
+
+##event name in this file are  "baseline_year_1_arm_1"  and  "1_year_follow_up_y_arm_1"
+ACSselected <- ACS %>% 
+  select(SUBJECTKEY, EVENTNAME, SEX, INTERVIEW_AGE, RACE_ETHNICITY, 
+                              REL_FAMILY_ID, ACS_RAKED_PROPENSITY_SCORE) %>%
+  mutate(RACE_ETHNICITY = recode_factor(as.factor(RACE_ETHNICITY),
+                `1` = "White", `2` = "Black", `3` = "Hispanic", `4` = "Asian", `5` = "Other",
+                .default = "White")) %>%
+  mutate(SEX = as.factor(SEX)) %>%
+  mutate(REL_FAMILY_ID = as.factor(REL_FAMILY_ID))
+
+ACSselected %>%
+ filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+ skimr::skim()
+
+```
+
+
+### Remove all those participants
+
+
+
+```{r}
+
+data_all_trial <- left_join(data_all,ACS, by=c('SUBJECTKEY','EVENTNAME'))
+
+# check if there are members from the same family at different sites. There are 6 of them.
+data_all_trial %>%
+    filter(EVENTNAME == "baseline_year_1_arm_1")%>%
+  drop_na(SITE_ID_L) %>%
+  filter(SITE_ID_L != "site22") %>%
+  count(REL_FAMILY_ID, SITE_ID_L) %>%
+  spread(SITE_ID_L, n, fill = 0) %>%
+  select(-REL_FAMILY_ID) %>% 
+       as.matrix %>% 
+       crossprod
+
+#below will remove those 6 
+data_all_baseline <- data_all_trial %>%
+  filter(EVENTNAME == "baseline_year_1_arm_1")%>%
+    drop_na(SITE_ID_L) %>%
+  filter(SITE_ID_L != "site22") %>%
+  group_by(REL_FAMILY_ID) %>% 
+  nest(SITE_ID_L, .key="SITE_ID_L") %>%
+  mutate(dup = ifelse(length(c(unlist(SITE_ID_L)))==1,0,
+                      ifelse(length(unique(c(unlist(SITE_ID_L)))) > 1,1,0))) %>%
+  unnest(SITE_ID_L) %>%
+  ungroup()
+
+family_exclude <- unique(data_all_baseline$REL_FAMILY_ID[which(data_all_baseline$dup==1)])
+ 
+
+data_all_trial <- data_all_trial%>%
+                 filter(!REL_FAMILY_ID %in% family_exclude)%>%
+    drop_na(SITE_ID_L) %>%
+  filter(SITE_ID_L != "site22")
+
+
+```
+
+
+Subjects to be removed from ABCD documents named 3a. NDA 4.0 changes and known issues. In the section of:Unusable imaging data due to event mislabeling
+
+```{r}
+
+
+baseline_subj_remove <- readRDS(paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/baseline_subj_remove', '.RData'))
+
+followup_subj_remove <- readRDS(paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/followup_subj_remove', '.RData'))
+
+baseline_data_removed <- data_all_trial%>%
+  filter(EVENTNAME == "baseline_year_1_arm_1")%>%
+                 filter(!SUBJECTKEY %in% baseline_subj_remove)
+
+followup_data_removed <- data_all_trial%>%
+  filter(EVENTNAME == "2_year_follow_up_y_arm_1")%>%
+                 filter(!SUBJECTKEY %in% followup_subj_remove)
+
+data_all_trial <- rbind(baseline_data_removed,followup_data_removed)
+```
+
+
+## set up variable names
+
+```{r}
+TaskDVs1Batch = c("NIHTBX_PICVOCAB_UNCORRECTED", 
+                  "NIHTBX_READING_UNCORRECTED",
+              "NIHTBX_FLANKER_UNCORRECTED",
+              "NIHTBX_PATTERN_UNCORRECTED",
+              "NIHTBX_PICTURE_UNCORRECTED",
+               "PEA_RAVLT_LD_TRIAL_VII_TC")
+
+
+subj_info <- c('SUBJECTKEY', 'SITE_ID_L',"EVENTNAME")
+
+```
+
+
+## Split all the data tables based on the contrasts
+
+
+```{r}
+
+##### processing DTI data
+
+DTI_select <- DTI_FA23Tracks %>% select(starts_with("FA_"), all_of(c("EVENTNAME","SUBJECTKEY")))
+
+suj_info_tibble <- data_all_trial %>% select(all_of(subj_info))
+
+DTI_data <- left_join(DTI_select,suj_info_tibble,by = c("EVENTNAME","SUBJECTKEY"))%>%
+            drop_na(SITE_ID_L)
+
+```
+
+
+## loading computed gfactor values
+
+```{r,eval=TRUE,echo=FALSE}
+gfactor_list <- readRDS(paste0(scriptfold,'genetics_psychopathology_common_scan_all_scripts/gfactor_scale_seperate', '.RData'))
+```
+
+
+## process features
+
+Making data splits
+
+```{r,eval=TRUE,echo=TRUE}
+### all the recipes are uploaded to Nesi
+###tuning hyper-parameters are done on nesi
+gfactor_baseline_train <- map(gfactor_list,"output_train_baseline")
+gfactor_baseline_test <- map(gfactor_list,"output_test_baseline")
+gfactor_followup_train <- map(gfactor_list,"output_train_followup")
+gfactor_followup_test <- map(gfactor_list,"output_test_followup")
+### processing features
+
+site_col <- DTI_data  %>%
+  distinct(SITE_ID_L) %>% 
+  arrange(SITE_ID_L) 
+
+site_list <- as.list(site_col$SITE_ID_L)
+
+site_char <- as.character(unlist(site_col$SITE_ID_L))
+
+
+split_list <- map(site_list, ~split_func(.x,data_input =DTI_data ))
+
+
+names(split_list) <- site_char
+
+features <- DTI_data %>%
+            select(-all_of(subj_info))%>%
+            colnames()
+```
+
+The features are processed with the following order,
+
+1. Remove outliers
+2. Scaling: use the mean and standard deviation of the baseline to scale the followup
+3. Combat to remove batch effects in training data sets.
+4. Scale again with the same methods in step 2.
+5. Use the test data set as a reference to combat the training set.
+
+
+
+```{r,eval=FALSE}
+processed_DTI_scale_seperate <- furrr::future_map(.x = split_list,~data_processing_cross_sites_seperate(split_input = .x),
+                             .options = furrr::furrr_options(seed = 123456))
+```
+
+
+```{r,eval=FALSE}
+saveRDS(processed_DTI_scale_seperate, paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/processed_DTI_scale_seperate_features_only', '.RData'))
+```
+
+
+```{r,eval=TRUE,echo=FALSE}
+processed_DTI_scale_seperate <- readRDS(paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/processed_DTI_scale_seperate_features_only', '.RData'))
+```
+
+## Join the features with the response cognitive abilities measure gfactor
+
+```{r}
+train_baseline_features <-map(processed_DTI_scale_seperate,~filter(.,EVENTNAME=="baseline_year_1_arm_1"& fold =="train"))   
+
+test_baseline_features <- map(processed_DTI_scale_seperate,~filter(.,EVENTNAME=="baseline_year_1_arm_1"& fold =="test")) 
+
+train_followup_features <-map(processed_DTI_scale_seperate,~filter(.,EVENTNAME=="2_year_follow_up_y_arm_1"& fold =="train")) 
+
+test_followup_features <- map(processed_DTI_scale_seperate,~filter(.,EVENTNAME=="2_year_follow_up_y_arm_1"& fold =="test"))
+
+train_baseline_data <-map2(.x = gfactor_list,.y = train_baseline_features,
+                           ~left_join(.x[["output_train_baseline"]],.y, by = "SUBJECTKEY")%>% drop_na()) 
+
+test_baseline_data <-map2(.x = gfactor_list,.y = test_baseline_features,
+                          ~left_join(.x[["output_test_baseline"]],.y, by = "SUBJECTKEY")%>% drop_na()) 
+
+train_followup_data <-map2(.x = gfactor_list,.y = train_followup_features,
+                           ~left_join(.x[["output_train_followup"]],.y, by = "SUBJECTKEY")%>% drop_na()) 
+
+test_followup_data <-map2(.x = gfactor_list,.y = test_followup_features,
+                          ~left_join(.x[["output_test_followup"]],.y, by = "SUBJECTKEY")%>% drop_na()) 
+
+
+train_baseline_select <-map(train_baseline_data,~select(.,"gfactor",all_of(features)))
+
+test_baseline_select <- map(test_baseline_data,~select(.,"gfactor",all_of(features)))
+
+train_followup_select <- map(train_followup_data,~select(.,"gfactor",all_of(features)))
+
+test_followup_select <- map(test_followup_data,~select(.,"gfactor",all_of(features)))
+```
+
+# Modelling
+
+## enent model fitting
+
+### Baseline
+
+```{r}
+baseline_recipe_scale_seperate <-map(train_baseline_select,~recipe_prep(train_input=.) )
+
+enet_fit_baseline_scale_seperate <-map(.x = baseline_recipe_scale_seperate,~enet_tuning(recipe_input = .) )  
+
+enet_fit_wf_scale_seperate <- map(enet_fit_baseline_scale_seperate,"enet_wf_final")
+
+
+enet_pred_baseline_scale_seperate <- pmap(list(baseline_recipe_scale_seperate,
+                                               enet_fit_wf_scale_seperate,
+                                               test_baseline_select),~model_final_fit(recipe_input = ..1, 
+                                                           wf_input = ..2,
+                                                           test_data = ..3))
+enet_pred_baseline_pred <- map(enet_pred_baseline_scale_seperate,"model_predict")
+
+
+enet_pred_baseline_scale_seperate_train <- pmap(list(baseline_recipe_scale_seperate,
+                                               enet_fit_wf_scale_seperate,
+                                               train_baseline_select),~model_final_fit(recipe_input = ..1, 
+                                                           wf_input = ..2,
+                                                           test_data = ..3))
+
+
+
+enet_baseline_metric <- purrr::map2(.x=enet_pred_baseline_pred,
+     .y=test_baseline_data,
+     ~metric_compute_site(data_input =.x ,
+                    site_input = .y)) %>%
+                      do.call(rbind,.)
+
+      enet_baseline_metric%>% 
+    kableExtra::kbl(caption = "metrics for all sites in baseline") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+  avg_table_var_names <- c("correlation (sd)", "tradrsq (sd)","MAE (sd)","RMSE (sd)"  )
+
+enet_baseline_metric_avg <- average_metric_one_mod(metric_list =enet_baseline_metric)
+
+enet_baseline_metric_avg_table <- enet_baseline_metric_avg %>%
+  mutate_if(is.numeric, round, digits=3)%>%
+  mutate("correlation (sd)" = paste0(correlation," (",cor_sd,")"))%>%
+  mutate("tradrsq (sd)" = paste0(tradrsq," (",rsq_sd,")"))%>%
+  mutate("MAE (sd)" = paste0(MAE," (",mae_sd,")"))%>%
+  mutate("RMSE (sd)" = paste0(RMSE," (",rmse_sd,")"))%>%
+  select_if(is.character)
+  
+  enet_baseline_metric_avg_table%>%
+    dplyr::select(all_of(avg_table_var_names))%>%
+    kableExtra::kbl(caption = paste0("metrics for modalities averaged across sites in baseline")) %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+
+
+```
+
+### followup
+
+```{r}
+followup_recipe_scale_seperate <- map(train_followup_select,~recipe_prep(train_input=.)) 
+
+enet_fit_followup_scale_seperate <-map(followup_recipe_scale_seperate,~enet_tuning(recipe_input = .) ) 
+
+enet_fit_wf_followup_scale_seperate <- map(enet_fit_followup_scale_seperate,"enet_wf_final")
+
+
+enet_pred_followup_scale_seperate <- pmap(list(followup_recipe_scale_seperate,
+                                               enet_fit_wf_followup_scale_seperate,
+                                               test_followup_select), 
+                                          ~model_final_fit(recipe_input = ..1, 
+                                                           wf_input = ..2,
+                                                           test_data = ..3) )
+
+
+enet_pred_followup_scale_seperate_train <- pmap(list(followup_recipe_scale_seperate,
+                                               enet_fit_wf_followup_scale_seperate,
+                                               train_followup_select), 
+                                          ~model_final_fit(recipe_input = ..1, 
+                                                           wf_input = ..2,
+                                                           test_data = ..3) )
+
+enet_pred_followup_pred <- map(enet_pred_followup_scale_seperate,"model_predict")
+
+
+enet_followup_metric <- purrr::map2(.x=enet_pred_followup_pred,
+     .y=test_followup_data,~metric_compute_site(data_input =.x ,
+                                           site_input = .y)) %>%
+                      do.call(rbind,.)
+
+      enet_followup_metric%>% 
+    kableExtra::kbl(caption = "metrics for all sites in followup") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+
+enet_followup_metric_avg <- average_metric_one_mod(metric_list =enet_followup_metric)
+
+enet_followup_metric_avg_table <- enet_followup_metric_avg %>%
+  mutate_if(is.numeric, round, digits=3)%>%
+  mutate("correlation (sd)" = paste0(correlation," (",cor_sd,")"))%>%
+  mutate("tradrsq (sd)" = paste0(tradrsq," (",rsq_sd,")"))%>%
+  mutate("MAE (sd)" = paste0(MAE," (",mae_sd,")"))%>%
+  mutate("RMSE (sd)" = paste0(RMSE," (",rmse_sd,")"))%>%
+  select_if(is.character)
+  
+  enet_followup_metric_avg_table%>%
+    dplyr::select(all_of(avg_table_var_names))%>%
+    kableExtra::kbl(caption = paste0("metrics for modalities averaged across sites in followup")) %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+```
+
+### Save the output
+
+```{r}
+DTI_output_list <- list(baseline_enet_fit = enet_fit_baseline_scale_seperate,
+                    baseline_enet_pred = enet_pred_baseline_scale_seperate,
+                    baseline_train_pred = enet_pred_baseline_scale_seperate_train,
+                    followup_enet_fit = enet_fit_followup_scale_seperate,
+                    followup_enet_pred = enet_pred_followup_scale_seperate,
+                    followup_train_pred = enet_pred_followup_scale_seperate_train,
+                    train_baseline_data =train_baseline_data,
+                    test_baseline_data =test_baseline_data,
+                    train_followup_data =train_followup_data,
+                    test_followup_data =test_followup_data )
+```
+
+```{r,eval=FALSE}
+saveRDS(DTI_output_list, paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/DTI_output_list', '.RData'))
+```
+
+
+
+

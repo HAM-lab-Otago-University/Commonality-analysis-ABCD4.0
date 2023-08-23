@@ -1,0 +1,179 @@
+---
+title: "Cleaning and quality control MID data table"
+author: "Yue Wang and Narun P"
+date:  "`r format(Sys.time(), '%d %b, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    number_sections: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## This analysis uses ABCD Release 4
+starting with setting up library and script/data folders
+
+```{r}
+rm(list=ls())
+gc()
+
+library(tidyverse)
+#library(GPArotation)
+#library(psych)
+
+
+
+datafolder = "/media/Data/ABCD/ABCD4/ABCD4SQL/"
+scriptfold = "/media/Data/Yue script/"
+NDAfold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+utilFold = "/media/Data/ABCD/ABCD3/Analysis/utilFunc/"
+studyNDAFold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+outputfolder = "/media/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+featurefolder = "/media/Data/ABCD/ABCD4/Analysis/ManipulatedData/"
+
+```
+
+## Load data
+
+```{r}
+MIDAseg.Beta <- tibble::as_tibble(read.csv(paste0(datafolder,"MIDAPARC03_DATA_TABLE.csv"))) 
+MIDAparc.Beta <- tibble::as_tibble(read.csv(paste0(datafolder,"MIDAPARCP203_DATA_TABLE.csv"))) 
+MIDDest1.Beta <- tibble::as_tibble(read.csv(paste0(datafolder,"ABCD_MIDABWDP01_DATA_TABLE.csv"))) 
+MIDDest2.Beta <- tibble::as_tibble(read.csv(paste0(datafolder,"ABCD_MIDABWDP202_DATA_TABLE.csv"))) 
+
+## column "TFMRI_MA_ACGML_B_SCS_AARH_VNDCRH" is missing!! 
+##My educated guess tells me it's  TFMRI_MA_ALVSL_B_SCS_VTDCRH 
+
+MIDAseg.Beta <- rename(MIDAseg.Beta, TFMRI_MA_ACGML_B_SCS_VNDCRH = TFMRI_MA_ALVSL_B_SCS_VTDCRH) #For renaming tibble column
+```
+
+## Prep Aseg data
+make the contrast Aseg readable, remove ROIs with white matter and ventricle 
+
+```{r}
+
+MIDAseg.ConNames <- MIDAseg.Beta  %>%
+  select(ends_with("CBWMLH")) %>%
+  rename_all(~sub('CBWMLH', '', .)) %>%
+  colnames()
+
+conNames <- c("antiRewVsNeu", 
+              "antiLosVsNeu", 
+              "feedRewPosVsNeg", 
+              "feedPunPosVsNeg", 
+              "antiLargeRewVsNeu", 
+              "antiSmallRewVsNeu", 
+              "antiLargeRewVsSmallRew", 
+              "antiLargeLossVsNeu", 
+              "antiSmallLossVsNeu", 
+              "antiLargeLossVsSmallLoss") 
+
+MIDAseg.Sub <- MIDAseg.Beta %>% select('SUBJECTKEY','EVENTNAME')
+
+ROI.FS <- MIDAseg.BetaRenamed <- list()
+#take out ventricle and white matter, leaving 19 areas
+for (conFSNum in 1:length(MIDAseg.ConNames)) {
+  ROI.FS[conFSNum][[1]] <- MIDAseg.Beta  %>%  select(contains(MIDAseg.ConNames[conFSNum])) %>% 
+    select(c(5:9, 12:14, 16:17, 22:30)) %>% colnames()
+  MIDAseg.BetaRenamed[conFSNum][[1]]  <- MIDAseg.Beta  %>% 
+    select('SUBJECTKEY', 'EVENTNAME', ROI.FS[conFSNum][[1]]) %>% 
+    rename_at(vars(contains(MIDAseg.ConNames[conFSNum])), 
+              funs(sub(MIDAseg.ConNames[conFSNum], conNames[conFSNum], .))) 
+    # rename_at(vars(contains(MIDAseg.ConNames[conFSNum])), 
+    #           list(~sub(MIDAseg.ConNames[conFSNum], ~conNames[conFSNum], .))) 
+}
+
+MIDAseg.BetaConRenamed <- MIDAseg.BetaRenamed %>% reduce(left_join, by = c("SUBJECTKEY","EVENTNAME"))
+
+
+#change the contrast names
+#MIDAseg.BetaConRenamed <- readableConMIDAsegABCD3(MIDAseg.Beta)
+
+#load the roi names used in ggseg
+asegMIDtoGGSeg3d<-tibble::as_tibble(read.csv(paste0(utilFold,"asegMIDtoGGSeg3d_19.csv")))
+
+#change the roi names 
+MIDAseg.BetaConRoiRenamed <- MIDAseg.BetaConRenamed 
+for (asegROI in 1:nrow(asegMIDtoGGSeg3d)) {
+  MIDAseg.BetaConRoiRenamed <- MIDAseg.BetaConRoiRenamed  %>%
+  rename_all(~sub(asegMIDtoGGSeg3d$MID[asegROI], paste0("_ROI_",asegMIDtoGGSeg3d$ggseg3d[asegROI]), .))
+}
+```
+
+## Prep Dest data
+1) change the col names to the names in Dict
+2) change the contrast names used in Dict to the same name used for Aseg
+3) change the ROI names used in Dict to ggseg3d rois for plotting
+
+```{r}
+#load the readable names based on dictionary
+DestName<-tibble::as_tibble(readxl::read_excel(paste0(utilFold,"MIDDestName_201.xlsx")))
+DestConDictNames <- DestName %>% select("DestConOriginal","DestConReadable")
+
+MIDDest.Beta <- plyr::join_all(list(MIDDest1.Beta, MIDDest2.Beta), by=c("SUBJECTKEY", 'EVENTNAME'), type='left')
+MIDDest.BetaUniq <- MIDDest.Beta[,!duplicated(colnames(MIDDest.Beta))]
+
+MIDDest.DictNames <- MIDDest.BetaUniq 
+for (DestConROI in 1:nrow(DestConDictNames)) {
+  MIDDest.DictNames <- MIDDest.DictNames  %>%
+  rename(!!DestConDictNames$DestConReadable[DestConROI] := !!DestConDictNames$DestConOriginal[DestConROI])  
+}
+
+#load cont names used in ASEG 
+MIDDestConToCommonCont<-tibble::as_tibble(read.csv(paste0(utilFold,"MIDDestConToCommonCont.csv")))
+
+#change the cont names to match those in ASEG
+MIDDest.DictNamesCommonCont <- MIDDest.DictNames
+for (CommonCont in 1:nrow(MIDDestConToCommonCont)) {
+  MIDDest.DictNamesCommonCont <- MIDDest.DictNamesCommonCont  %>%
+  rename_all(~sub(MIDDestConToCommonCont$DestConReadable[CommonCont], MIDDestConToCommonCont$MidConNames[CommonCont], .))
+}
+
+#load the roi names used in ggseg
+dictMIDtoGGSeg3d <-tibble::as_tibble(read.csv(paste0(utilFold,"dictMIDtoGGSeg3d.csv")))
+#change the roi names 
+MIDDest.GGSec3dNamesCommonCont <- MIDDest.DictNamesCommonCont
+for (DestROI in 1:nrow(dictMIDtoGGSeg3d )) {
+  MIDDest.GGSec3dNamesCommonCont <- MIDDest.GGSec3dNamesCommonCont  %>%
+  rename_all(~sub(dictMIDtoGGSeg3d$MID[DestROI], paste0("_ROI_",dictMIDtoGGSeg3d$ggseg3d[DestROI]), .))
+}
+
+```
+
+# Join Aseg and Dest together and export a file
+```{r}
+MIDDestAseg<- plyr::join_all(list(MIDAseg.BetaConRoiRenamed, MIDDest.GGSec3dNamesCommonCont), by=c("SUBJECTKEY", 'EVENTNAME'), type='left')
+MIDDestAseg <- MIDDestAseg[,!duplicated(colnames(MIDDestAseg))]
+#write.csv(MIDDestAseg , paste0(manipuFold,"MIDDestAsegReadableGgseg3d.csv"))
+```
+
+# testing QC based on the "one" variable
+IMGINCL_MID_INCLUDE from ABCD_IMGINCL01_DATA_TABLE.csv
+
+and provide an example of QCed data
+```{r}
+## there is ABCD 4.0 file, QC according to the ABCD 4.0 instructions
+
+RecQCMID <-tibble::as_tibble(read.table(paste0(studyNDAFold,"abcd_imgincl01.txt"),header=TRUE)) 
+
+RecQCMID <- RecQCMID[-1,]##remove the line that explaines the variables
+RecQCMID <- RecQCMID%>%
+  rename(SUBJECTKEY=subjectkey,EVENTNAME=eventname,IMGINCL_MID_INCLUDE=imgincl_mid_include)%>%
+  select(SUBJECTKEY, EVENTNAME, IMGINCL_MID_INCLUDE)
+
+
+RecQCMID%>% count(EVENTNAME,IMGINCL_MID_INCLUDE)
+
+MIDDestAsegQCed <- plyr::join_all(list(MIDDestAseg, RecQCMID), by=c("SUBJECTKEY", 'EVENTNAME'), type='left') %>%
+  filter(IMGINCL_MID_INCLUDE == 1) %>% select(-IMGINCL_MID_INCLUDE)
+
+
+
+write.csv(MIDDestAsegQCed , paste0(featurefolder,"MIDDestAsegQCed.csv"))
+  
+```

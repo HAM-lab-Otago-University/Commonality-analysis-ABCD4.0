@@ -1,0 +1,565 @@
+---
+title: "Scatter plots for predictive performance of each brain modality for baseline and follow-up"
+author: "Yue Wang and Narun P"
+date:  "`r format(Sys.time(), '%d %b, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    number_sections: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r load_data, echo=FALSE}
+rm(list = ls(all.names = TRUE)) #will clear all objects includes hidden objects.
+gc() #free up memory and report the memory usage.
+```
+
+## Note
+Here we the ABCD release 4.0 data-set
+
+# Setting up the environments
+
+## Loading libraries
+The following libraries and default settings were used during the analysis:
+
+
+```{r load_libraries}
+options(scipen = 999)
+#library("sva")
+library(tidyverse)
+library("tidymodels")
+##parallel map
+library(partR2)
+library(lme4)
+library(yhat)
+
+library(partR2)
+library(lme4)
+library(yhat)
+### plotting
+library(ggpointdensity)
+library(ggtext)
+library(ggpubr)
+library(cowplot)
+library(viridis)
+
+theme_set(theme_bw() + theme(panel.grid = element_blank()))
+## parallel processing number of cores register
+all_cores <- parallel::detectCores(logical = FALSE) - 5
+
+doParallel::registerDoParallel(cores = all_cores)
+
+```
+
+## Loading local paths
+
+
+We first loaded all of the relevant data files (not shown here as they refer to local directories):
+
+```{r loading_data, echo=FALSE}
+# from Qnap data windows
+#datafolder = "//np-qnapa/Data/ABCD/ABCD4/ABCD4SQL/"
+#scriptfold = "//np-qnapa/Data/Yue script/"
+#NDAfold = "//np-qnapa/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#utilFold = "//np-qnapa/Data/ABCD/ABCD3/Analysis/utilFunc/"
+#studyNDAFold = "//np-qnapa/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#outputfolder = "//np-qnapa/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+
+### unbuntu directories
+
+#datafolder = "/media/Data/ABCD/ABCD4/ABCD4SQL/"
+#scriptfold = "/media/Data/Yue script/"
+#NDAfold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#utilFold = "/media/Data/ABCD/ABCD3/Analysis/utilFunc/"
+#studyNDAFold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#outputfolder = "/media/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+#featurefolder = "/media/Data/ABCD/ABCD4/Analysis/ManipulatedData/"
+
+### mac directories
+datafolder = "/Volumes/Data/ABCD/ABCD4/ABCD4SQL/"
+scriptfold = "/Volumes/Data/Yue script/"
+NDAfold = "/Volumes/Data/ABCD/ABCD4/ABCDStudyNDA/"
+utilFold = "/Volumes/Data/ABCD/ABCD3/Analysis/utilFunc/"
+studyNDAFold = "/Volumes/Data/ABCD/ABCD4/ABCDStudyNDA/"
+outputfolder = "/Volumes/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+featurefolder = "/Volumes/Data/ABCD/ABCD4/Analysis/ManipulatedData/"
+
+source(paste0(scriptfold,"stacking_gfactor_modelling/r_functions.R"))
+
+
+```
+
+
+# Loading and processing data
+
+## Load in enet predicted results
+
+Loading the processed elastic net test predictions. Those tables are extracted from Nesi model fit output files.
+
+```{r}
+enet_baseline_list  <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/random_forest_data/random_forest_all_baseline_test.RDS"))
+enet_followup_list <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/random_forest_data/random_forest_all_followup_test.RDS"))
+```
+
+Vectors of column names of all  the modalities in the data frame. 
+
+```{r}
+modality_names=c("DTI_data","rsmri_within_avg_data","smri_T2_mean_total_data","smri_T1_mean_total_data","Normalised_T2_","Avg_T2_Gray_","Avg_T2_White_","Normalised_T1_","Avg_T1_Gray_","Avg_T1_White_","Dest_Sulcal_Depth_","Dest_Vol_","Dest_Area_","Dest_Thick_","Vol_ASEG_","Avg_T2_ASEG_","Avg_T1_ASEG_Vol_","rsmri_gordon_aseg_data","incorrectgovsincorrectstop_ROI_","incorrectgovscorrectgo_ROI_","correctstopvsincorrectstop_ROI_","anystopvscorrectgo_ROI_","incorrectstopvscorrectgo_ROI_","correctstopvscorrectgo_ROI_","correctgovsfixation_ROI_","antiLargeLossVsSmallLoss_ROI_","antiSmallLossVsNeu_ROI_","antiLargeLossVsNeu_ROI_","antiLargeRewVsSmallRew_ROI_","antiSmallRewVsNeu_ROI_","antiLargeRewVsNeu_ROI_","feedPunPosVsNeg_ROI_","feedRewPosVsNeg_ROI_","antiLosVsNeu_ROI_","antiRewVsNeu_ROI_","posfacevsneutface_ROI_","negfacevsneutface_ROI_","facevsplace_ROI_","emotionvsneutface_ROI_","X2backvs0back_ROI_","emotion_ROI_","place_ROI_","X2back_ROI_","X0back_ROI_","rsmri_subnet") 
+
+subj_info <- c("SUBJECTKEY","SITE_ID_L","EVENTNAME")
+
+```
+
+## load the computed gfactor
+
+```{r}
+
+gfactor_list <- readRDS(paste0(scriptfold,"genetics_psychopathology_common_scan_all_scripts/gfactor_scale_seperate.RData"))
+
+
+```
+
+## Join the elastic net predicted results and response gfactor
+
+
+Be careful of which site you are using
+
+```{r}
+gfactor_baseline_test_list <- map(gfactor_list,"output_test_baseline")
+gfactor_followup_test_list <- map(gfactor_list,"output_test_followup")
+
+site_char <- gfactor_baseline_test_list%>% names()
+
+join_enet_gfactor <- function(site_input,enet_list_input, gfactor_list_input){
+  enet_input <- enet_list_input[[site_input]] 
+  gfactor_input <- gfactor_list_input[[site_input]]
+  output_data <- full_join(enet_input,gfactor_input, by = "SUBJECTKEY")
+  return(output_data)
+}
+
+
+enet_baseline_all_list <- map(.x=site_char,~join_enet_gfactor(.x,
+                                                              enet_list_input=enet_baseline_list,
+                                                              gfactor_list_input=gfactor_baseline_test_list)) 
+names(enet_baseline_all_list) <- site_char
+
+enet_followup_all_list <- map(.x=site_char,~join_enet_gfactor(.x,
+                                                              enet_list_input=enet_followup_list,
+                                                              gfactor_list_input=gfactor_followup_test_list)) 
+names(enet_followup_all_list) <- site_char
+
+enet_baseline_all <- enet_baseline_all_list %>% do.call(rbind,.)
+enet_followup_all <- enet_followup_all_list %>% do.call(rbind,.)
+
+
+```
+
+Load in the names of plotting titles for all the modalities.
+
+```{r}
+plotting_names <- readxl::read_excel(paste0(scriptfold,"Common_psy_gene_brain_all/CommonalityPlotingNames.xlsx"))
+
+
+name_with_space <-  c("DTI","rsfMRI cortical FC","T2 summations","T1 summations","T2 normalised intensity","T2 gray matter \navg intensity","T2 white matter \navg intensity","T1 normalised \nintensity","T1 gray matter \navg intensity","T1 white matter \navg intensity","sulcal depth","cortical volumne","cortical area","cortical thickness","subcortical \nvolumne","T2 subcortical \navg intensity","T1 subcortical \navg intensity","rsfMRI temporal \nvariance","SST Incorrect Go \nvs Incorrect Stop","SST Incorrect Go \nvs Correct Go","SST Correct Stop \nvs Incorrect Stop","SST Any Stop \nvs Correct Go","SST Incorrect Stop \nvs Correct Go","SST Correct Stop \nvs Correct Go","SST Correct Go \nvs Fixation","MID Large Loss vs \nSmall Loss anticipation","MID Smal Loss vs \nNeutral anticipation","MID Large Loss vs \nNeutral anticipation","MID Large Reward vs \nSmall Reward anticipation","MID Small Reward vs \nNeutral anticipation","MID Large Reward vs \nNeutral anticipation","MID Postive vs Negative \nPunishment Feedback","MID Postive vs Negative \nReward Feedback","MID Loss vs \nNeutral anticipation","MID Reward vs \nNeutral anticipation","ENback Positive \nvs Neutral Face","ENback Negative \nvs Neutral Face","ENback Face \nvs Place","ENback Emotion \nvs Neutral Face","ENback 2back \nvs 0back","ENback emotion","ENback place","ENback 2back","ENback 0back","rsfMRI \nsubcortical-network FC") 
+
+plotting_names <-plotting_names %>% mutate(plotting_name_space = name_with_space)
+```
+
+
+
+# Compute the performances metric tables
+
+## performance metrics by site
+
+Metric compute function
+
+```{r}
+metric_compute_one_site <- function(data_input,pred_input,site_input){
+ data_one_site <- data_input[[site_input]]
+  
+   cor_model <- cor(data_one_site[[pred_input]],
+                   data_one_site$gfactor,
+                   use = "pairwise.complete.obs")
+  
+  tradrsq_model <- yardstick::rsq_trad(data=data_one_site, 
+                                       truth=.data$gfactor, 
+                                       estimate=.data[[pred_input]])
+  
+  mae_model <- yardstick::mae(data=data_one_site, 
+                              truth=.data$gfactor, 
+                              estimate=.data[[pred_input]])
+  
+  rmse_model <- yardstick::rmse(data=data_one_site, 
+                                truth=.data$gfactor, 
+                                estimate=.data[[pred_input]])
+  return(tibble(correlation=cor_model,  tradrsq= tradrsq_model$.estimate ,MAE= mae_model$.estimate, RMSE=rmse_model$.estimate,site = site_input))
+} 
+
+
+metric_compute_modality <- function(data_input,pred_names, time_input){
+  data_list_select <- map(data_input,~select(.,all_of(c("gfactor",pred_names)))%>% drop_na())
+  
+    title_name <- plotting_names$plotting_name[which(plotting_names$Original_name==pred_names)]
+  
+  metric_list <- map(site_char,~metric_compute_one_site(site_input = .,data_input=data_list_select, pred_input = pred_names))%>%do.call(rbind,.)
+  table_metric <- metric_list%>%
+    kableExtra::kbl(caption = paste0("metrics for all sites in ", title_name)) %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")%>%
+  kableExtra::footnote(general = time_input)
+  return(list(table_metric=table_metric,
+             metric_list=metric_list ))
+}
+```
+
+
+```{r,results='asis'}
+metric_table_cross_site <- map(.x = modality_names, ~metric_compute_modality(data_input = enet_baseline_all_list,
+                                                                             pred_names = .,
+                                                                             time_input = "baseline"))
+
+map(metric_table_cross_site,"table_metric")%>% print()
+
+
+metric_list_cross_site <- map(metric_table_cross_site,"metric_list")
+
+
+metric_table_cross_site_followup <- map(.x = modality_names, ~metric_compute_modality(data_input = enet_followup_all_list,
+                                                                             pred_names = .,
+                                                                             time_input = "followup"))
+
+map(metric_table_cross_site_followup,"table_metric")%>% print()
+
+metric_list_cross_site_followup <- map(metric_table_cross_site_followup,"metric_list")
+```
+
+## compute the metrics by joining all sites together
+
+
+```{r}
+metric_compute_all <- function(data_input,pred_input){
+   cor_model <- cor(data_input[[pred_input]],
+                   data_input$gfactor,
+                   use = "pairwise.complete.obs")
+  
+  tradrsq_model <- yardstick::rsq_trad(data=data_input, 
+                                       truth=.data$gfactor, 
+                                       estimate=.data[[pred_input]])
+  
+  mae_model <- yardstick::mae(data=data_input, 
+                              truth=.data$gfactor, 
+                              estimate=.data[[pred_input]])
+  
+  rmse_model <- yardstick::rmse(data=data_input, 
+                                truth=.data$gfactor, 
+                                estimate=.data[[pred_input]])
+  return(tibble(correlation=cor_model,  tradrsq= tradrsq_model$.estimate ,MAE= mae_model$.estimate, RMSE=rmse_model$.estimate))
+} 
+
+
+metric_compute_modality_all <- function(data_input,pred_names){
+  data_list_select <- data_input%>% select(all_of(c("gfactor",pred_names)))%>% drop_na()
+  
+    title_name <- plotting_names$plotting_name[which(plotting_names$Original_name==pred_names)]
+  
+  metric_list <- metric_compute_all(data_input=data_list_select, pred_input = pred_names)%>%
+                 mutate(modality = title_name)
+  return(metric_list)
+}
+
+
+```
+
+
+```{r}
+
+table_var_names <- c( "modality" ,"correlation","tradrsq","MAE","RMSE")
+
+metric_table_all <- map(.x = modality_names, ~metric_compute_modality_all(data_input = enet_baseline_all,
+                                                                             pred_names = .))%>% 
+                  do.call(rbind,.)%>%
+                  select(all_of(table_var_names))
+
+metric_table_all%>%
+   arrange(desc(correlation))%>%
+  mutate_if(is.numeric, round, digits=3)%>%
+    kableExtra::kbl(caption = paste0("metrics for all sites combined in baseline")) %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+metric_table_all_followup <- map(.x = modality_names, ~metric_compute_modality_all(data_input = enet_followup_all,
+                                                                             pred_names = .))%>% 
+                  do.call(rbind,.)%>%
+                  select(all_of(table_var_names))
+
+metric_table_all_followup%>%
+   arrange(desc(correlation))%>%
+  mutate_if(is.numeric, round, digits=3)%>%
+    kableExtra::kbl(caption = paste0("metrics for all sites in followup")) %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+```
+
+## metrics by average the performance across sites
+
+```{r}
+
+average_metric <- function(metric_list,pred_names){
+  metric_average <- metric_list %>% select(-site)%>% colMeans()
+  metric_sd <- metric_list %>% select(-site)%>% as.matrix()%>% matrixStats::colSds()
+  
+      title_name <- plotting_names$plotting_name[which(plotting_names$Original_name==pred_names)]
+  output_tibble <-tibble(correlation= metric_average[1],
+                         cor_sd = metric_sd[1],
+                         tradrsq= metric_average[2],
+                         rsq_sd = metric_sd[2],
+                         MAE = metric_average[3],
+                         mae_sd = metric_sd[3],
+                         RMSE =metric_average[4],
+                         rmse_sd = metric_sd[4],
+                         modality=title_name,
+                         pred_names = pred_names)
+}
+
+
+```
+
+
+
+```{r,results='asis'}
+
+site_avg_metric <- map2(.x=metric_list_cross_site,
+                        .y =modality_names, ~average_metric(metric_list = .x, pred_names = .y)) %>% do.call(rbind,.)
+
+site_avg_metric_table <- site_avg_metric%>%
+   arrange(desc(correlation))%>%
+  mutate_if(is.numeric, round, digits=3)%>%
+  mutate("correlation (sd)" = paste0(correlation," (",cor_sd,")"))%>%
+  mutate("tradrsq (sd)" = paste0(tradrsq," (",rsq_sd,")"))%>%
+  mutate("MAE (sd)" = paste0(MAE," (",mae_sd,")"))%>%
+  mutate("RMSE (sd)" = paste0(RMSE," (",rmse_sd,")"))%>%
+  select_if(is.character)
+  
+avg_table_var_names <- c("modality","correlation (sd)", "tradrsq (sd)","MAE (sd)","RMSE (sd)"  )
+
+  site_avg_metric_table%>%
+    select(all_of(avg_table_var_names))%>%
+    kableExtra::kbl(caption = paste0("metrics for modalities averaged across sites in baseline")) %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+  
+  
+  
+  
+site_avg_metric_followup <- map2(.x=metric_list_cross_site_followup,
+                      .y =modality_names, ~average_metric(metric_list = .x, pred_names = .y)) %>% 
+                       do.call(rbind,.)
+
+site_avg_metric_followup_table <- site_avg_metric_followup%>%
+   arrange(desc(correlation))%>%
+  mutate_if(is.numeric, round, digits=3)%>%
+  mutate("correlation (sd)" = paste0(correlation," (",cor_sd,")"))%>%
+  mutate("tradrsq (sd)" = paste0(tradrsq," (",rsq_sd,")"))%>%
+  mutate("MAE (sd)" = paste0(MAE," (",mae_sd,")"))%>%
+  mutate("RMSE (sd)" = paste0(RMSE," (",rmse_sd,")"))%>%
+  select_if(is.character)
+
+site_avg_metric_followup_table%>%
+      select(all_of(avg_table_var_names))%>%
+    kableExtra::kbl(caption = paste0("metrics for all sites in followup")) %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+```
+
+# Scatterplot with average labels
+
+```{r,fig.width=10}
+
+scatter_plot_new_label <- function(data_input,pred_names,label_table){
+  data_input_select <- data_input%>%
+                       select(all_of(c("gfactor",pred_names)))%>%
+                       drop_na()
+  
+  #corr_metric <- cor(data_input_select[[pred_names]],
+  #                 data_input_select$gfactor,
+  #                 use = "pairwise.complete.obs")
+  
+  title_name <- plotting_names$plotting_name[which(plotting_names$Original_name==pred_names)]
+  title_name_space <- plotting_names$plotting_name_space[which(plotting_names$Original_name==pred_names)]
+
+  label_index <- which(label_table$modality==title_name)
+  
+  cor_label <- label_table$`correlation (sd)`[label_index]
+  
+ scatter_plot <-  ggplot(data_input_select,aes(x = scale(.data[[pred_names]]) , 
+                     y = scale(.data[["gfactor"]]))) +
+  geom_pointdensity( size = 1) +
+    scale_color_viridis()+
+  geom_smooth(method = 'lm', se = FALSE, col = 'black')  +
+  labs(x = NULL,
+       y = NULL,
+       title = paste (title_name_space,'\nr = ',cor_label))+
+                     theme(axis.text.x = element_text(size = 35),                      
+                           axis.text.y = element_text(size = 35),                     
+                           plot.title = element_text(size=35)) + 
+     theme(
+    strip.background = element_blank(),
+    strip.text.x = element_blank(),
+    legend.position = "none")
+ return(scatter_plot)
+  
+}
+```
+
+Get the legend of all the scatterplots:
+
+The following function plot the legend which will be used for all the scatter plots and the aligned scatterplots.
+
+```{r}
+
+scatter_plot_new_label_legend <- function(data_input= enet_baseline_all,
+                                          pred_names=baseline_order_vec[1],
+                                          label_table = site_avg_metric_table){
+  data_input_select <- data_input%>%
+                       select(all_of(c("gfactor",pred_names)))%>%
+                       drop_na()
+  
+  #corr_metric <- cor(data_input_select[[pred_names]],
+  #                 data_input_select$gfactor,
+  #                 use = "pairwise.complete.obs")
+  
+  title_name <- plotting_names$plotting_name[which(plotting_names$Original_name==pred_names)]
+  title_name_space <- plotting_names$plotting_name_space[which(plotting_names$Original_name==pred_names)]
+
+  label_index <- which(label_table$modality==title_name)
+  
+  cor_label <- label_table$`correlation (sd)`[label_index]
+  
+ scatter_plot <-  ggplot(data_input_select,aes(x = scale(.data[[pred_names]]) , 
+                     y = scale(.data[["gfactor"]]))) +
+  geom_pointdensity( size = 1) +
+    scale_color_viridis(name = NULL,breaks = c(1,950),labels = c("sparse","dense"))+
+  geom_smooth(method = 'lm', se = FALSE, col = 'black')  +
+  labs(x = NULL,
+       y = NULL,
+       title = paste (title_name_space,'\nr = ',cor_label))+
+                     theme(axis.text.x = element_text(size = 35),                      
+                           axis.text.y = element_text(size = 35),                     
+                           plot.title = element_text(size=35)) + 
+     theme(
+    strip.background = element_blank(),
+    strip.text.x = element_blank(),
+    legend.position = "bottom", 
+    legend.text=element_text(size=35),
+    legend.key.height= unit(1, 'cm'),
+        legend.key.width= unit(4, 'cm'))
+ return(scatter_plot)
+  
+}
+
+```
+
+
+
+
+
+```{r,message=FALSE,warning=FALSE,fig.width=30,fig.height=40}
+### baseline
+## change the order of the modalities
+site_avg_metric_table_scatter <- site_avg_metric%>%
+   arrange(desc(correlation))
+
+baseline_order_vec <- site_avg_metric_table_scatter$pred_names 
+
+
+one_plot_with_legend <- scatter_plot_new_label_legend()
+
+scatter_legend <- get_legend(one_plot_with_legend)
+
+## use the descending order of the correlation to order the scatterplots.
+## map function use the same order in the vector
+scatter_plot_baseline_new <- map(.x =baseline_order_vec, ~scatter_plot_new_label(data_input = enet_baseline_all,
+                                                    pred_names = .x,label_table = site_avg_metric_table))
+
+
+
+
+scatter_baseline_grid_new <-ggpubr::ggarrange(plotlist = scatter_plot_baseline_new,
+                                                        common.legend = TRUE,ncol = 5,nrow = 9,
+                                                        legend.grob = scatter_legend,
+                                                        legend="top")
+
+labelled_scatter_baseline <- ggpubr::annotate_figure(scatter_baseline_grid_new,
+                          left= ggpubr::text_grob("Observed Cognitive Abilities (Z)",size=45,rot=90),
+                        bottom = ggpubr::text_grob("Predicted Cognitive Abilities (Z)",size=45),
+                        top = ggpubr::text_grob("Performance of Each Set of Features from the Brain in Predicting Cognitive Abilities: Baseline",size=45, face = "bold")) 
+
+
+labelled_scatter_baseline
+
+
+
+### followup
+site_avg_metric_table_scatter_followup <- site_avg_metric_followup%>%
+   arrange(desc(correlation))
+
+followup_order_vec <- site_avg_metric_table_scatter_followup$pred_names 
+
+
+scatter_plot_followup_new <- map(.x =followup_order_vec, ~scatter_plot_new_label(data_input = enet_followup_all,
+                                                    pred_names = .x,label_table = site_avg_metric_followup_table))
+
+
+scatter_followup_grid_new <-ggpubr::ggarrange(plotlist = scatter_plot_followup_new,
+                                                        common.legend = TRUE,ncol = 5,nrow = 9,
+                                                        legend.grob = scatter_legend,
+                                                        legend="top")
+
+labelled_scatter_followup <- ggpubr::annotate_figure(scatter_followup_grid_new,
+                          left= ggpubr::text_grob("Observed Cognitive Abilities (Z)",size=45,rot=90),
+                        bottom = ggpubr::text_grob("Predicted Cognitive Abilities (Z)",size=45),
+                        top = ggpubr::text_grob("Performance of Each Set of Features from the Brain in Predicting Cognitive Abilities: Followup",size=45, face = "bold")) 
+
+
+labelled_scatter_followup
+
+
+
+
+
+```
+Save the metric output
+
+```{r}
+
+site_output_metric_table <- site_avg_metric_table %>%
+                            select(-pred_names)%>%
+                            mutate(event = "baseline")
+
+
+site_output_metric_followup_table <- site_avg_metric_followup_table %>%
+                            select(-pred_names)%>%
+                            mutate(event = "followup")
+
+output_table <- bind_rows(site_output_metric_table,site_output_metric_followup_table)
+```
+
+
+```{r,eval=FALSE}
+
+saveRDS(output_table,paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/performance_metrics/set_of_brain_features_performance_metric', '.RData'))
+
+
+
+saveRDS(scatter_legend,paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/scatter_plots/scatter_legend', '.RData'))
+```
+

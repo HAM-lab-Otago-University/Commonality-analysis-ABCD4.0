@@ -1,0 +1,214 @@
+---
+title: "Cleaning and quality control structureal-mri T2 data table"
+author: "Yue Wang and Narun P"
+date:  "`r format(Sys.time(), '%d %b, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    number_sections: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## This analysis uses ABCD Release 3
+starting with setting up library and script/data folders
+
+```{r}
+rm(list=ls())
+
+library(tidyverse)
+
+
+
+datafolder = "/media/Data/ABCD/ABCD4/ABCD4SQL/"
+scriptfold = "/media/Data/Yue script/"
+NDAfold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+utilFold = "/media/Data/ABCD/ABCD3/Analysis/utilFunc/"
+studyNDAFold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+outputfolder = "/media/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+featurefolder = "/media/Data/ABCD/ABCD4/Analysis/ManipulatedData/"
+
+
+```
+
+
+
+## Load data
+
+```{r}
+sMRIAsegAparc3 <-as_tibble(read.csv(paste0(datafolder,"ABCD_SMRIP30201_DATA_TABLE.csv"))) 
+MRIsMRIDest3 <-as_tibble(read.csv(paste0(datafolder,"ABCD_MRISDP30201_DATA_TABLE.csv"))) 
+## there is ABCD 4.0 file, QC according to the ABCD 4.0 instructions
+
+QCsMRI <-tibble::as_tibble(read.table(paste0(studyNDAFold,"abcd_imgincl01.txt"),header=TRUE)) 
+
+QCsMRI <- QCsMRI[-1,]##remove the line that explaines the variables
+QCsMRI <- QCsMRI%>%
+  rename(SUBJECTKEY=subjectkey,EVENTNAME=eventname,IMGINCL_T2W_INCLUDE=imgincl_t2w_include)%>%
+  select(SUBJECTKEY, EVENTNAME, IMGINCL_T2W_INCLUDE)
+
+QCsMRI %>% count(EVENTNAME,IMGINCL_T2W_INCLUDE)
+```
+
+
+join data 
+```{r}
+
+Screen <- plyr::join_all(list(sMRIAsegAparc3, MRIsMRIDest3,QCsMRI), by=c("SUBJECTKEY", 'EVENTNAME'), type='full')
+
+screenUniq <- Screen[,!duplicated(colnames(Screen))]
+
+screenUniqRowID <- tibble::rowid_to_column(screenUniq, "ID")
+
+```
+
+only include data that IMGINCL_T2W_INCLUDE from ABCD_IMGINCL01_DATA_TABLE.csv
+
+```{r}
+
+screenQCExcluded <- screenUniqRowID %>%
+  filter(IMGINCL_T2W_INCLUDE == 1) %>% 
+  select(-IMGINCL_T2W_INCLUDE)
+  
+nrow(screenUniqRowID)
+nrow(screenQCExcluded)
+```
+
+Load dict and change names
+
+```{r}
+
+#load the readable names based on dictionary
+sMRIVarNames<-tbl_df(readxl::read_excel(paste0(utilFold,"sMRIVariableToImport.xlsx"))) %>% 
+  select(original, CondReadableFilteredGgseg) %>% drop_na(CondReadableFilteredGgseg)
+###Destrieux ROI 
+
+
+### change names of sulcal depth
+
+
+roi_names <- sMRIVarNames$CondReadableFilteredGgseg[174:321]%>%
+            str_remove_all("Dest_Area_")
+
+## average T2 intensity white matter 
+
+avg_T2_white_roi_names <- paste0("Avg_T2_White_", roi_names)
+
+avg_T2_white_tibble <- screenQCExcluded %>%
+                       select(all_of(paste0("MRISDP_", seq(from =1058, to = 1205, by = 1))))
+
+
+names(avg_T2_white_tibble) <- avg_T2_white_roi_names
+
+
+## average T2 intensity gray matter 
+
+avg_T2_gray_roi_names <- paste0("Avg_T2_Gray_", roi_names)
+
+avg_T2_Gray_tibble <- screenQCExcluded %>%
+                       select(all_of(paste0("MRISDP_", seq(from =1209, to = 1356, by = 1))))
+
+
+names(avg_T2_Gray_tibble) <- avg_T2_gray_roi_names
+
+
+### normalised T2 intensity 
+
+
+nom_T2_roi_names <- paste0("Normalised_T2_", roi_names)
+
+nom_T2_tibble <- screenQCExcluded %>%
+                       select(all_of(paste0("MRISDP_", seq(from =1360, to = 1507, by = 1))))
+
+
+names(nom_T2_tibble) <- nom_T2_roi_names
+
+### change names of ASEG rois
+
+aseg_roi_names <- sMRIVarNames$CondReadableFilteredGgseg[1:19]%>%
+            str_remove_all("ASEG_")
+
+aseg_original_names <- sMRIVarNames$original[1:19]%>% 
+                       str_remove_all("SMRI_VOL_SCS_")
+                      
+avg_T2_aseg_roi_names <- paste0("Avg_T2_ASEG_", aseg_roi_names)
+
+aseg_original_roi_names <- paste0("SMRI_T2W_SCS_", aseg_original_names)
+
+T2sMRIVarNames <- tibble(original = aseg_original_roi_names,CondReadableFilteredGgseg= avg_T2_aseg_roi_names)
+
+
+### Average intensity of the normalized T2-weighted image 
+
+
+
+avg_T2_aseg_tibble <- screenQCExcluded %>%
+                       select(starts_with("SMRI_T2W_SCS_"))
+
+
+#change the names
+avg_T2_aseg_tibble_newnames <- avg_T2_aseg_tibble
+for (sMRIVar in 1:nrow(T2sMRIVarNames)) {
+  avg_T2_aseg_tibble_newnames <- avg_T2_aseg_tibble_newnames %>%
+  rename(!!T2sMRIVarNames$CondReadableFilteredGgseg[sMRIVar] := !!T2sMRIVarNames$original[sMRIVar])  
+}
+
+
+avg_T2_aseg_tibble_newnames <- avg_T2_aseg_tibble_newnames%>%
+                               select(starts_with("Avg_T2_ASEG_"))
+  
+  
+  
+
+whole_Cerebellum_Cortex <- screenQCExcluded%>% select(all_of(c("SMRI_T2W_SCS_CRBCORTEXLH","SMRI_T2W_SCS_CRBCORTEXRH")))%>%
+                  rowSums()
+
+
+### get the mean of individual rois
+mean_vars <- c("MRISDP_1208","MRISDP_1359","MRISDP_1510")
+
+mean_T2 <- screenQCExcluded %>% select(all_of(mean_vars))%>%
+              rename(mean_T2_Avg_white=MRISDP_1208)%>%
+              rename(mean_T2_Avg_gray=MRISDP_1359)%>%
+              rename(mean_T2_normalised=MRISDP_1510)%>%
+            mutate(Avg_T2_whole_Cerebellum_Cortex_ASEG =whole_Cerebellum_Cortex)
+
+
+
+
+id_tibble <- screenQCExcluded %>% select(-starts_with("SMRI_"))%>%
+                                  select(-starts_with("MRISDP_"))
+
+sMRI.T2Weighted <-do.call("cbind", list(avg_T2_white_tibble, 
+                                        avg_T2_Gray_tibble, 
+                                        nom_T2_tibble,
+                                        avg_T2_aseg_tibble_newnames,
+                                        mean_T2,
+                                        id_tibble))
+
+
+sMRI.T2Weighted <-sMRI.T2Weighted %>%
+  mutate_at(vars(starts_with("Avg_T2_White_")),  ~ . / mean_T2_Avg_white)%>%
+  mutate_at(vars(starts_with("Avg_T2_Gray_")),  ~ . / mean_T2_Avg_gray) %>%
+  mutate_at(vars(starts_with("Normalised_T2_")),  ~ . / mean_T2_normalised)%>%
+  mutate_at(vars(starts_with("Avg_T2_ASEG_")),  ~ . /Avg_T2_whole_Cerebellum_Cortex_ASEG)   
+
+
+```
+
+
+
+
+
+write on file
+```{r}
+write.csv(sMRI.T2Weighted, paste0(featurefolder,"sMRI.T2Weighted.csv"))
+
+```
+
+

@@ -1,0 +1,237 @@
+---
+title: "Cleaning and quality control SST data table"
+author: "Yue Wang and Narun P"
+date:  "`r format(Sys.time(), '%d %b, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    number_sections: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## This analysis uses ABCD Release 3
+starting with setting up library and script/data folders
+
+```{r}
+rm(list=ls())
+gc()
+
+library(tidyverse)
+#library(GPArotation)
+#library(psych)
+
+
+datafolder = "/media/Data/ABCD/ABCD4/ABCD4SQL/"
+scriptfold = "/media/Data/Yue script/"
+NDAfold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+utilFold = "/media/Data/ABCD/ABCD3/Analysis/utilFunc/"
+studyNDAFold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+outputfolder = "/media/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+featurefolder = "/media/Data/ABCD/ABCD4/Analysis/ManipulatedData/"
+
+```
+
+## Load data
+
+```{r}
+SSTAsegAPac.Beta <-tibble::as_tibble(read.csv(paste0(datafolder,"MRISST02_DATA_TABLE.csv"))) 
+SSTDest1.Beta <-tibble::as_tibble(read.csv(paste0(datafolder,"ABCD_TFSSTABWDP101_DATA_TABLE.csv"))) 
+SSTDest2.Beta <-tibble::as_tibble(read.csv(paste0(datafolder,"ABCD_TFSSTABWDP201_DATA_TABLE.csv"))) 
+
+```
+
+
+
+## Prep Aseg data
+make the contrast Aseg readable, remove ROIs with white matter and ventricle 
+
+```{r}
+#load the readable names based on dictionary
+AName<-tbl_df(readxl::read_excel(paste0(utilFold,"SSTAsegApracName_201.xlsx")))
+AConDictNames <- AName %>% select("AConOriginal","AConReadable")
+
+SSTAsegAPac.DictNames <- SSTAsegAPac.Beta 
+for (AConROI in 1:nrow(AConDictNames)) {
+  SSTAsegAPac.DictNames  <- SSTAsegAPac.DictNames   %>%
+  rename(!!AConDictNames$AConReadable[AConROI] := !!AConDictNames$AConOriginal[AConROI])  
+}
+
+#only include Aseg
+SSTAseg.DictNames <-SSTAsegAPac.DictNames[1:230]
+
+#take the SSTAseg and look at its prefixes for contrast names
+SSTAseg.ConNames <- SSTAseg.DictNames  %>%
+  select(ends_with("putamenlh")) %>%
+  rename_all(~sub('putamenlh', '', .)) %>%
+  colnames()
+
+#take out ventricle and white matter, leaving 19 areas
+ROI.FS <- SSTAseg.DictNamesTrimmed <- list()
+for (conFSNum in 1:length(SSTAseg.ConNames)) {
+  ROI.FS[conFSNum][[1]] <- SSTAseg.DictNames  %>%  select(contains(SSTAseg.ConNames[conFSNum])) %>% 
+    select(c(5:9, 12:14, 16:17, 22:30)) %>% colnames()
+  SSTAseg.DictNamesTrimmed[conFSNum][[1]]  <- SSTAseg.DictNames  %>% 
+    select('SUBJECTKEY', 'EVENTNAME', ROI.FS[conFSNum][[1]]) 
+}
+SSTAseg.DictNamesTrimmedReduced <- 
+  SSTAseg.DictNamesTrimmed %>% reduce(left_join, by = c("SUBJECTKEY", 'EVENTNAME'))
+
+
+#load the roi names used in ggseg
+asegSSTtoGGSeg3d<-tbl_df(read.csv(paste0(utilFold,"asegMIDNbacktoGGSeg3d_19.csv")))
+#SST uses the same ROI name with Nback
+
+#change the roi names 
+SSTAseg.GgsegNamesTrimmedReduced <- SSTAseg.DictNamesTrimmedReduced
+for (asegROI in 1:nrow(asegSSTtoGGSeg3d)) {
+  SSTAseg.GgsegNamesTrimmedReduced <- SSTAseg.GgsegNamesTrimmedReduced  %>%
+  rename_all(~sub(asegSSTtoGGSeg3d$NBACK[asegROI], 
+                  paste0("ROI_",asegSSTtoGGSeg3d$ggseg3d[asegROI]), .))
+}
+
+```
+
+## Prep Dest data
+1) change the col names to the names in Dict
+2) change the ROI names used in Dict to ggseg3d rois for plotting
+
+```{r}
+
+#load the readable names based on dictionary
+DestName<-tbl_df(readxl::read_excel(paste0(utilFold,"SSTDestName_201.xlsx")))
+DestConDictNames <- DestName %>% select("DestConOriginal","DestConReadable")
+
+SSTDest.Beta <- plyr::join_all(list(SSTDest1.Beta, SSTDest2.Beta), by = c("SUBJECTKEY", 'EVENTNAME'), type='left')
+SSTDest.BetaUniq <- SSTDest.Beta[,!duplicated(colnames(SSTDest.Beta))]
+
+SSTDest.DictNames <- SSTDest.BetaUniq
+for (DestConROI in 1:nrow(DestConDictNames)) {
+  SSTDest.DictNames <- SSTDest.DictNames  %>%
+  rename(!!DestConDictNames$DestConReadable[DestConROI] := !!DestConDictNames$DestConOriginal[DestConROI])  
+}
+
+#turns out SST used the same Dest  name with MID
+
+#load the roi names used in ggseg
+dictMIDtoGGSeg3d <-tbl_df(read.csv(paste0(utilFold,"dictMIDtoGGSeg3d.csv")))
+#change the roi names 
+SSTDest.GGSeg3dNames<- SSTDest.DictNames
+for (DestROI in 1:nrow(dictMIDtoGGSeg3d )) {
+  SSTDest.GGSeg3dNames <- SSTDest.GGSeg3dNames  %>%
+  rename_all(~sub(dictMIDtoGGSeg3d$MID[DestROI], paste0("ROI_",dictMIDtoGGSeg3d$ggseg3d[DestROI]), .))
+}
+
+```
+
+# Join Aseg and Dest together and export a file
+```{r}
+SSTDestAseg<- plyr::join_all(list(SSTAseg.GgsegNamesTrimmedReduced, SSTDest.GGSeg3dNames), 
+                             by=c("SUBJECTKEY", 'EVENTNAME'), type='left')
+SSTDestAseg <- SSTDestAseg[,!duplicated(colnames(SSTDestAseg))]
+#write.csv(SSTDestAseg , paste0(manipuFold,"SSTDestAsegReadableGgseg3d.csv"))
+```
+
+# testing QC based on the "one" variable
+IMGINCL_SST_INCLUDE from ABCD_IMGINCL01_DATA_TABLE.csv
+```{r}
+
+RecQCSST <-tibble::as_tibble(read.table(paste0(studyNDAFold,"abcd_imgincl01.txt"),header=TRUE)) 
+
+RecQCSST <- RecQCSST[-1,]##remove the line that explaines the variables
+RecQCSST <- RecQCSST%>%
+  rename(SUBJECTKEY=subjectkey,EVENTNAME=eventname,IMGINCL_SST_INCLUDE=imgincl_sst_include)%>%
+  select(SUBJECTKEY, EVENTNAME, IMGINCL_SST_INCLUDE)
+
+
+RecQCSST %>% count(EVENTNAME,IMGINCL_SST_INCLUDE)
+
+```
+
+# testing QC based on behavioral flags:
+
+from ABCD_SST02_DATA_TABLE.csv
+
+• tfmri_sst_beh_violatorflag: Race model violators where Stop Fail RT > Go RT
+• tfmri_sst_beh_glitchflag: Task coding error
+• tfmri_sst_beh_0SSDcount: Number of Stop trials with 0ms SSD  
+
+Variable names for SSRT
+• tfmri_sst_all_beh_total_mssrt: Stop Signal Reaction Time, mean estimation
+• tfmri_sst_all_beh_total_issrt: Stop Signal Reaction Time, integration estimation
+
+```{r}
+BehSST <-tibble::as_tibble(read.csv(paste0(datafolder,"ABCD_SST02_DATA_TABLE.csv"))) 
+
+count(BehSST, EVENTNAME, TFMRI_SST_BEH_VIOLATORFLAG)
+count(BehSST, EVENTNAME, TFMRI_SST_BEH_GLITCHFLAG)
+count(BehSST, EVENTNAME, TFMRI_SST_BEH_0SSDCOUNT>1) # too many will be excluded
+count(BehSST, EVENTNAME, TFMRI_SST_BEH_0SSDCOUNT>7+(1.5*(7))) # 1.5 IQR = 17.5
+
+summary(BehSST$TFMRI_SST_BEH_0SSDCOUNT)
+
+# BehSST %>% filter(TFMRI_SST_BEH_0SSDCOUNT>1) %>%
+# ggplot(aes(x=TFMRI_SST_BEH_0SSDCOUNT, color=EVENTNAME)) + geom_histogram()
+# 
+# #BehSST %>% rstatix::is_outlier(TFMRI_SST_BEH_0SSDCOUNT) 
+# #BehSST_0SSDCOUNTOutliers <- BehSST %>% rstatix::identify_outliers("TFMRI_SST_BEH_0SSDCOUNT") 
+# 
+# BehSSTQC <-tibble::as_tibble(read.csv(paste0(dataFold,"ABCD_SST02_DATA_TABLE.csv"))) %>% 
+#   select(SUBJECTKEY, EVENTNAME, TFMRI_SST_BEH_VIOLATORFLAG,TFMRI_SST_BEH_GLITCHFLAG,TFMRI_SST_BEH_0SSDCOUNT)
+# 
+# BehSST %>% 
+#   filter(TFMRI_SST_BEH_VIOLATORFLAG==0, TFMRI_SST_BEH_GLITCHFLAG==0, TFMRI_SST_BEH_PERFORMFLAG ==1) %>%
+#   ggplot(aes(x=TFMRI_SST_BEH_0SSDCOUNT, color=EVENTNAME)) + geom_histogram()
+# 
+# BehSST %>% 
+#   filter(TFMRI_SST_BEH_VIOLATORFLAG!=1, TFMRI_SST_BEH_GLITCHFLAG!=1, TFMRI_SST_BEH_PERFORMFLAG ==1) %>% 
+#   count(EVENTNAME, TFMRI_SST_BEH_0SSDCOUNT>17.5)
+
+BehSST %>% 
+  filter(TFMRI_SST_BEH_VIOLATORFLAG==0, TFMRI_SST_BEH_GLITCHFLAG==0, TFMRI_SST_BEH_PERFORMFLAG ==1) %>%
+  ggplot(aes(x=TFMRI_SST_ALL_BEH_TOTAL_MSSRT, color=EVENTNAME)) + geom_histogram()
+
+BehSST %>% 
+  filter(TFMRI_SST_BEH_VIOLATORFLAG!=1, TFMRI_SST_BEH_GLITCHFLAG!=1, TFMRI_SST_BEH_PERFORMFLAG ==1) %>%
+  ggplot(aes(x=TFMRI_SST_ALL_BEH_TOTAL_ISSRT, color=EVENTNAME)) + geom_histogram()
+
+# BehSST %>% 
+#   filter(TFMRI_SST_BEH_VIOLATORFLAG!=1, TFMRI_SST_BEH_GLITCHFLAG!=1, TFMRI_SST_BEH_PERFORMFLAG ==1,TFMRI_SST_BEH_0SSDCOUNT<17.5) %>%
+#   ggplot(aes(x=TFMRI_SST_ALL_BEH_TOTAL_MSSRT, color=EVENTNAME)) + geom_histogram()
+# 
+# BehSST %>% 
+#   filter(TFMRI_SST_BEH_VIOLATORFLAG!=1, TFMRI_SST_BEH_GLITCHFLAG!=1, TFMRI_SST_BEH_PERFORMFLAG ==1,TFMRI_SST_BEH_0SSDCOUNT<17.5) %>%
+#   ggplot(aes(x=TFMRI_SST_ALL_BEH_TOTAL_ISSRT, color=EVENTNAME)) + geom_histogram()
+
+
+```
+
+## example QC script
+
+doesn't include tfmri_sst_beh_0SSDcount: Number of Stop trials with 0ms SSD as it will lead to too many exclusion
+
+```{r}
+
+
+BehSST <-tibble::as_tibble(read.csv(paste0(datafolder,"ABCD_SST02_DATA_TABLE.csv"))) 
+
+SSTDestAseg_QC <- plyr::join_all(list(SSTDestAseg, RecQCSST, BehSST), by=c("SUBJECTKEY", 'EVENTNAME'), type='left') 
+SSTDestAseg_QC <- SSTDestAseg_QC[,!duplicated(colnames(SSTDestAseg_QC))]
+
+SSTDestAseg_QC %>% 
+  count(EVENTNAME, IMGINCL_SST_INCLUDE == 1, TFMRI_SST_BEH_VIOLATORFLAG!=1, TFMRI_SST_BEH_GLITCHFLAG!=1)
+
+SSTDestAsegQCed <- SSTDestAseg_QC %>%
+  filter(IMGINCL_SST_INCLUDE == 1, TFMRI_SST_BEH_VIOLATORFLAG!=1, TFMRI_SST_BEH_GLITCHFLAG!=1) %>% 
+  select(-IMGINCL_SST_INCLUDE,-TFMRI_SST_BEH_VIOLATORFLAG,-TFMRI_SST_BEH_GLITCHFLAG)
+SSTDestAsegQCed  <- SSTDestAsegQCed[,!duplicated(colnames(SSTDestAsegQCed))]
+write.csv(SSTDestAsegQCed , paste0(featurefolder,"SSTDestAsegQCed.csv"))  
+                
+
+
+```

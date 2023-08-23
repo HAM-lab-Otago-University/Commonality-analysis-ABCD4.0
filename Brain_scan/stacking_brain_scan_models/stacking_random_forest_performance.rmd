@@ -1,0 +1,239 @@
+---
+title: "Compute the performances of the random forest stacking model,with all the elastic net predictions from all sets of brain features"
+author: "Yue Wang and Narun P"
+date:  "`r format(Sys.time(), '%d %b, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    number_sections: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r load_data, echo=FALSE}
+rm(list = ls(all.names = TRUE)) #will clear all objects includes hidden objects.
+gc() #free up memory and report the memory usage.
+```
+
+## Note
+Here we the ABCD release 4.0 data-set
+
+# Setting up the environments
+
+## Loading libraries
+The following libraries and default settings were used during the analysis:
+
+
+```{r load_libraries}
+options(scipen = 999)
+library("sva")
+library(tidyverse)
+library("tidymodels")
+##parallel map
+
+theme_set(theme_bw() + theme(panel.grid = element_blank()))
+## parallel processing number of cores register
+all_cores <- parallel::detectCores(logical = FALSE) - 10
+
+doParallel::registerDoParallel(cores = all_cores)
+
+```
+
+## Loading paths
+
+We first loaded all of the relevant data files (not shown here as they refer to local directories):
+
+```{r loading_data, echo=FALSE}
+# from Qnap data windows
+#datafolder = "//np-qnapa/Data/ABCD/ABCD4/ABCD4SQL/"
+#scriptfold = "//np-qnapa/Data/Yue script/"
+#NDAfold = "//np-qnapa/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#utilFold = "//np-qnapa/Data/ABCD/ABCD3/Analysis/utilFunc/"
+#studyNDAFold = "//np-qnapa/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#outputfolder = "//np-qnapa/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+
+
+## linux directory
+#datafolder = "/media/Data/ABCD/ABCD4/ABCD4SQL/"
+#scriptfold = "/media/Data/Yue script/"
+#NDAfold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#utilFold = "/media/Data/ABCD/ABCD3/Analysis/utilFunc/"
+#studyNDAFold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#outputfolder = "/media/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+#featurefolder = "/media/Data/ABCD/ABCD4/Analysis/ManipulatedData/"
+
+
+## mac directory
+datafolder = "/Volumes/Data/ABCD/ABCD4/ABCD4SQL/"
+scriptfold = "/Volumes/Data/Yue script/"
+NDAfold = "/Volumes/Data/ABCD/ABCD4/ABCDStudyNDA/"
+utilFold = "/Volumes/Data/ABCD/ABCD3/Analysis/utilFunc/"
+studyNDAFold = "/Volumes/Data/ABCD/ABCD4/ABCDStudyNDA/"
+outputfolder = "/Volumes/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+featurefolder = "/Volumes/Data/ABCD/ABCD4/Analysis/ManipulatedData/"
+
+source(paste0(scriptfold,"stacking_gfactor_modelling/r_functions.R"))
+
+
+```
+
+## Load the computed results
+
+
+```{r}
+
+rf_followup_list <- readRDS(paste0(scriptfold,'stacking_gfactor_modelling/collect_random_forest_results/random_forest_followup_results.RDS'))
+
+rf_baseline_list <- readRDS(paste0(scriptfold,'stacking_gfactor_modelling/collect_random_forest_results/random_forest_baseline_results.RDS'))
+## use the following code if the results are by sites
+#batch_idx_vec <- seq(1:21)
+
+
+#rf_baseline_list<- batch_idx_vec %>% #map(.,~readRDS(paste0(scriptfold,'stacking_gfactor_modelling/random_forest_results/random_forest_baseline.',.,'.RDS')))
+
+### naming list if they are individually loaded
+#baseline_site_list <- map(baseline_test_list, ~select(.,"SITE_ID_L")%>% unique())%>% do.call(rbind,.)
+#names(baseline_test_list) <- baseline_site_list$SITE_ID_L
+
+#names(rf_baseline_list) <- baseline_site_list$SITE_ID_L
+```
+
+# Computing the results tables
+
+
+Extracted the predictions of the test data from loeaded results.
+
+```{r}
+baseline_test_list <- map(rf_baseline_list,"test_data")
+baseline_test_pred <- map(rf_baseline_list,"test_pred")
+
+followup_test_pred <- map(rf_followup_list,"test_pred")
+followup_test_list <- map(rf_followup_list,"test_data")
+
+## checking the number of observations across all sites
+
+baseline_test_list%>% map(.,~dim(.)[1])%>% 
+                  do.call(rbind,.)%>% 
+                  t()%>%
+                  tibble::as_tibble()%>%
+    kableExtra::kbl(caption = "number of observations for all sites in baseline") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+followup_test_list%>%  map(.,~dim(.)[1])%>% 
+                  do.call(rbind,.)%>% 
+                  t()%>%
+                  tibble::as_tibble()%>%
+    kableExtra::kbl(caption = "number of observations for all sites in followup") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+```
+
+# Compute the performance metrics and write tables.
+
+```{r}
+baseline_pred_tibble_list <- map(baseline_test_pred,"model_predict")
+
+baseline_metrics <- map2(.x =baseline_test_list,.y=baseline_pred_tibble_list,~metric_compute_site(data_input = .y, site_input = .x))
+
+baseline_metrics%>% 
+  do.call(rbind,.)%>%
+    kableExtra::kbl(caption = "metrics for all sites in baseline") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+
+baseline_metrics_table <- baseline_metrics%>% 
+  do.call(rbind,.)
+
+baseline_metric_avg <- average_metric_one_mod(metric_list =baseline_metrics_table)
+
+baseline_metric_avg_table <- baseline_metric_avg %>%
+  mutate_if(is.numeric, round, digits=3)%>%
+  mutate("correlation (sd)" = paste0(correlation," (",cor_sd,")"))%>%
+  mutate("tradrsq (sd)" = paste0(tradrsq," (",rsq_sd,")"))%>%
+  mutate("MAE (sd)" = paste0(MAE," (",mae_sd,")"))%>%
+  mutate("RMSE (sd)" = paste0(RMSE," (",rmse_sd,")"))%>%
+  select_if(is.character)
+  
+avg_table_var_names <- c("correlation (sd)", "tradrsq (sd)","MAE (sd)","RMSE (sd)"  )
+
+  baseline_metric_avg_table%>%
+    dplyr::select(all_of(avg_table_var_names))%>%
+    kableExtra::kbl(caption = paste0("metrics for modalities averaged across sites in baseline")) %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+
+
+
+```
+
+
+```{r}
+followup_pred_tibble_list <- map(followup_test_pred,"model_predict")
+
+followup_metrics <- map2(.x =followup_test_list,.y=followup_pred_tibble_list,~metric_compute_site(data_input = .y, site_input = .x))
+
+followup_metrics%>% 
+  do.call(rbind,.)%>%
+    kableExtra::kbl(caption = "metrics for all sites in baseline") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+
+followup_metrics_table <- followup_metrics%>% 
+  do.call(rbind,.)
+
+
+followup_metric_avg <- average_metric_one_mod(metric_list =followup_metrics_table)
+
+followup_metric_avg_table <- followup_metric_avg %>%
+  mutate_if(is.numeric, round, digits=3)%>%
+  mutate("correlation (sd)" = paste0(correlation," (",cor_sd,")"))%>%
+  mutate("tradrsq (sd)" = paste0(tradrsq," (",rsq_sd,")"))%>%
+  mutate("MAE (sd)" = paste0(MAE," (",mae_sd,")"))%>%
+  mutate("RMSE (sd)" = paste0(RMSE," (",rmse_sd,")"))%>%
+  select_if(is.character)
+  
+
+  followup_metric_avg_table%>%
+    dplyr::select(all_of(avg_table_var_names))%>%
+    kableExtra::kbl(caption = paste0("metrics for modalities averaged across sites in followup")) %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+
+
+
+```
+
+
+```{r}
+
+
+baseline_metric_output_table <-  baseline_metric_avg_table %>%
+                                 mutate(event = "baseline")
+
+
+followup_metric_output_table <- followup_metric_avg_table %>% 
+                                 mutate(event = "followup")
+
+
+output_table <- bind_rows(baseline_metric_output_table,followup_metric_output_table)%>%
+                mutate(modality = "Brain")
+```
+
+
+```{r,eval=FALSE}
+
+saveRDS(output_table,paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/performance_metrics/brain_performance_metric', '.RData'))
+
+```

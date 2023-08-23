@@ -1,0 +1,617 @@
+---
+title: "Processing QCed data tables for elastic net model fitting"
+author: "Yue Wang and Narun P"
+date:  "`r format(Sys.time(), '%d %b, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    number_sections: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+
+options(width = 60)
+local({
+  hook_output <- knitr::knit_hooks$get('output')
+  knitr::knit_hooks$set(output = function(x, options) {
+    if (!is.null(options$max.height)) options$attr.output <- c(
+      options$attr.output,
+      sprintf('style="max-height: %s;"', options$max.height)
+    )
+    hook_output(x, options)
+  })
+})
+```
+
+Show part of the output if it is too long.
+
+```{r load_data, echo=FALSE}
+rm(list = ls(all.names = TRUE)) #will clear all objects includes hidden objects.
+gc() #free up memory and report the memory usage.
+```
+
+## Note
+Here we the ABCD release 4.0 data-set
+
+# Setting up the environment
+
+## Loading libraries
+The following libraries and default settings were used during the analysis:
+
+
+```{r load_libraries}
+options(scipen = 999)
+library("sva")
+library(tidyverse)
+library("tidymodels")
+##parallel map
+
+theme_set(theme_bw() + theme(panel.grid = element_blank()))
+## parallel processing number of cores register
+all_cores <- parallel::detectCores(logical = FALSE) - 10
+
+doParallel::registerDoParallel(cores = all_cores)
+
+```
+
+## Setting up paths.
+
+We first loaded all of the relevant data files (not shown here as they refer to local directories):
+
+```{r loading_data, echo=FALSE}
+# from Qnap data windows
+#datafolder = "//np-qnapa/Data/ABCD/ABCD4/ABCD4SQL/"
+#scriptfold = "//np-qnapa/Data/Yue script/"
+#NDAfold = "//np-qnapa/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#utilFold = "//np-qnapa/Data/ABCD/ABCD3/Analysis/utilFunc/"
+#studyNDAFold = "//np-qnapa/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#outputfolder = "//np-qnapa/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+
+
+## linux directory
+#datafolder = "/media/Data/ABCD/ABCD4/ABCD4SQL/"
+#scriptfold = "/media/Data/Yue script/"
+#NDAfold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#utilFold = "/media/Data/ABCD/ABCD3/Analysis/utilFunc/"
+#studyNDAFold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#outputfolder = "/media/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+#featurefolder = "/media/Data/ABCD/ABCD4/Analysis/ManipulatedData/"
+
+## mac directory
+datafolder = "/Volumes/Data/ABCD/ABCD4/ABCD4SQL/"
+scriptfold = "/Volumes/Data/Yue script/"
+NDAfold = "/Volumes/Data/ABCD/ABCD4/ABCDStudyNDA/"
+utilFold = "/Volumes/Data/ABCD/ABCD3/Analysis/utilFunc/"
+studyNDAFold = "/Volumes/Data/ABCD/ABCD4/ABCDStudyNDA/"
+outputfolder = "/Volumes/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+featurefolder = "/Volumes/Data/ABCD/ABCD4/Analysis/ManipulatedData/"
+
+
+
+```
+
+
+# Data Preparation
+
+
+## load all of the files
+
+The aim is to compute almost all of the sets of all brain features into the analysis.
+
+All of the following files are processed with quality control. Please refer to those files if necessary.
+
+
+## Change the wrong site
+
+
+Change the wrong site manually based on the: "Release Notes: Adolescent Brain Cognitive Development Study ℠ (ABCD Study ® ) Data Release 4.0 Changes and Known Issues"
+
+only fixed the baseline and two year followup that is used in the analysis
+
+As ID is required not to show in the coding shared online, please refer to this file for the exact subject IDs.
+
+
+```{r}
+ 
+Siteinfo <-tibble::as_tibble(read.csv(paste0(datafolder, "ABCD_LT01_DATA_TABLE.csv")))
+
+
+Siteinfo_fixed <- Siteinfo
+
+site_fix <- readRDS(paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/site_fix', '.RData'))
+
+for(i in 1:dim(site_fix)[1]){
+  fix_site_id  <- site_fix$SUBJECTKEY[i]
+  fix_site_event <- site_fix$EVENTNAME[i]
+  fix_site <- site_fix$SITE_ID_L[i]
+  Siteinfo_fixed$SITE_ID_L[which(Siteinfo_fixed$SUBJECTKEY== fix_site_id& Siteinfo_fixed$EVENTNAME == fix_site_event)] <- fix_site
+}
+
+Siteinfo <-Siteinfo_fixed 
+``` 
+ 
+ 
+ 
+```{r load_data2}
+
+###loading site and scanner information
+MRIinfo <-tibble::as_tibble(read.csv(paste0(datafolder, "ABCD_MRI01_DATA_TABLE.csv"))) 
+MriandSite <- left_join(MRIinfo,Siteinfo, by=c('SUBJECTKEY','EVENTNAME'))
+MRIinfo  %>% count(EVENTNAME,SEX)
+  
+###loading response variables
+NIH_TB <-tibble::as_tibble(read.csv(paste0(datafolder,"ABCD_TBSS01_DATA_TABLE.csv"))) 
+LittleMan <-tibble::as_tibble(read.csv(paste0(datafolder,"LMTP201_DATA_TABLE.csv"))) 
+Pearson <-tibble::as_tibble(read.csv(paste0(datafolder,"ABCD_PS01_DATA_TABLE.csv"))) 
+NBackBeh <- tibble::as_tibble(read.csv(paste0(datafolder, "ABCD_MRINBACK02_DATA_TABLE.csv")) ) 
+
+
+
+###loading QCed brain scan data (Nback only)
+
+NBackDestAsegQCed <- tibble::as_tibble(read.csv(paste0(featurefolder, "NBackDestAsegQCed.csv")) ) 
+MIDDestAsegQCed <- tibble::as_tibble(read.csv(paste0(featurefolder, "MIDDestAsegQCed.csv")) ) 
+SSTDestAsegQCed <- tibble::as_tibble(read.csv(paste0(featurefolder, "SSTDestAsegQCed.csv")) ) 
+
+
+
+DTI_FA23Tracks <- tibble::as_tibble(read.csv(paste0(featurefolder, "DTI_FA23Tracks.csv")) ) 
+
+RSBetNetExcludedNoCOMBATABCD4 <- tibble::as_tibble(read.csv(paste0(featurefolder, "RSBetNetExcludedNoCOMBATABCD4.csv")) ) 
+
+dim(RSBetNetExcludedNoCOMBATABCD4)
+
+#colnames(RSBetNetExcludedNoCOMBATABCD4)
+
+RSBetNetExcludedNoCOMBATABCD4_selected_names <- RSBetNetExcludedNoCOMBATABCD4%>%
+                                                select(-all_of(c("SUBJECTKEY","EVENTNAME" )))%>%
+                                                colnames()
+
+
+RSSubNetExcludedNoCOMBATedABCD4 <- tibble::as_tibble(read.csv(paste0(featurefolder, "RSSubNetExcludedNoCOMBATedABCD4.csv")) ) 
+
+dim(RSSubNetExcludedNoCOMBATedABCD4)
+
+RSSubNetExcludedNoCOMBATedABCD4_selected_names <- RSSubNetExcludedNoCOMBATedABCD4%>%
+                                                select(-all_of(c("SUBJECTKEY","EVENTNAME" )))%>%
+                                                colnames()
+
+
+rsmri_variance_gordon_aseg <- tibble::as_tibble(read.csv(paste0(featurefolder, "rsmri_variance_gordon_aseg.csv")) ) 
+
+
+
+dim(rsmri_variance_gordon_aseg)
+
+#colnames(rsmri_variance_gordon_aseg)
+
+sMRI.T2Weighted <- tibble::as_tibble(read.csv(paste0(featurefolder, "sMRI.T2Weighted.csv")) ) 
+sMRI.T1Weighted <- tibble::as_tibble(read.csv(paste0(featurefolder, "sMRI.T1Weighted.csv")) ) 
+
+
+
+### Note that we have not removed NA before Enet tuning to keep the most number of participants
+
+short_names <- tibble::as_tibble(read.csv(paste0(scriptfold,"ShortNames_all.csv") ))
+
+### load vision scan data, according to the documents some of the participants cannot see the IPad screen
+vision_idx <- tibble::as_tibble(read.table(paste0(NDAfold, "abcd_svs01.txt"),header = TRUE))
+
+
+```
+
+
+
+
+
+## Join all the data sets
+
+```{r}
+
+vision_idx <- vision_idx[-1,]%>% mutate(SUBJECTKEY=subjectkey)%>%
+                                mutate(EVENTNAME=eventname)
+
+data_all <- plyr::join_all(list(NBackDestAsegQCed,
+                                MIDDestAsegQCed,
+                                SSTDestAsegQCed,
+                                DTI_FA23Tracks,
+                                RSBetNetExcludedNoCOMBATABCD4,
+                                rsmri_variance_gordon_aseg,
+                                sMRI.T2Weighted,
+                                sMRI.T1Weighted,
+                                NBackBeh,
+                                Pearson,
+                                LittleMan,
+                                NIH_TB,
+                                MriandSite,
+                                vision_idx,
+                                RSSubNetExcludedNoCOMBATedABCD4), 
+                           by=c('SUBJECTKEY','EVENTNAME'), type='full')
+### full join all the data sets to keep all the participants after QC. Actually smri have the most number of participants
+### there are only two participants that are not in the smri data set but in other modalities.
+### change integer response variables into double for later scaling and IQR
+data_all$PEA_RAVLT_LD_TRIAL_VII_TC <- as.double(data_all$PEA_RAVLT_LD_TRIAL_VII_TC)
+data_all$PEA_WISCV_TRS <- as.double(data_all$PEA_WISCV_TRS)
+```
+
+## filter out the participants that have problems with vision
+
+54 subjects
+
+```{r}
+data_removed <- data_all %>% filter(snellen_va_y == 0 | snellen_va_y == 1 | vis_flg == 2)
+
+removed_subj <- data_removed$SUBJECTKEY
+data_all <- data_all %>% filter(!SUBJECTKEY %in% removed_subj)
+
+length(removed_subj)
+```
+
+
+## Remove participants within the same family took measurements in different sites
+
+### Loading Family relationship ID
+
+```{r, cache = FALSE, warning=FALSE}
+ACS <-read_csv(paste0(datafolder,"ACSPSW03_DATA_TABLE.csv")) 
+#knitr::kable(glimpse(ACS))
+
+#race_ethnicity
+#1 = White; 2 = Black; 3 = Hispanic; 4 = Asian; 5 = Other
+
+# guardian-report relationship
+# Relationship of the participant in his or her family
+# 0 = single; 1 = sibling; 2 = twin; 3 = triplet
+# ACS %>% count(REL_RELATIONSHIP)
+
+
+##event name in this file are  "baseline_year_1_arm_1"  and  "1_year_follow_up_y_arm_1"
+ACSselected <- ACS %>% 
+  select(SUBJECTKEY, EVENTNAME, SEX, INTERVIEW_AGE, RACE_ETHNICITY, 
+                              REL_FAMILY_ID, ACS_RAKED_PROPENSITY_SCORE) %>%
+  mutate(RACE_ETHNICITY = recode_factor(as.factor(RACE_ETHNICITY),
+                `1` = "White", `2` = "Black", `3` = "Hispanic", `4` = "Asian", `5` = "Other",
+                .default = "White")) %>%
+  mutate(SEX = as.factor(SEX)) %>%
+  mutate(REL_FAMILY_ID = as.factor(REL_FAMILY_ID))
+
+ACSselected %>%
+ filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+ skimr::skim()
+
+```
+
+
+
+### Remove all those participants
+
+
+
+```{r}
+
+data_all_trial <- left_join(data_all,ACS, by=c('SUBJECTKEY','EVENTNAME'))
+
+# check if there are members from the same family at different sites. There are 6 of them.
+data_all_trial %>%
+    filter(EVENTNAME == "baseline_year_1_arm_1")%>%
+  drop_na(SITE_ID_L) %>%
+  filter(SITE_ID_L != "site22") %>%
+  count(REL_FAMILY_ID, SITE_ID_L) %>%
+  spread(SITE_ID_L, n, fill = 0) %>%
+  select(-REL_FAMILY_ID) %>% 
+       as.matrix %>% 
+       crossprod
+
+#below will remove those 6 
+data_all_baseline <- data_all_trial %>%
+  filter(EVENTNAME == "baseline_year_1_arm_1")%>%
+    drop_na(SITE_ID_L) %>%
+  filter(SITE_ID_L != "site22") %>%
+  group_by(REL_FAMILY_ID) %>% 
+  nest(SITE_ID_L, .key="SITE_ID_L") %>%
+  mutate(dup = ifelse(length(c(unlist(SITE_ID_L)))==1,0,
+                      ifelse(length(unique(c(unlist(SITE_ID_L)))) > 1,1,0))) %>%
+  unnest(SITE_ID_L) %>%
+  ungroup()
+
+family_exclude <- unique(data_all_baseline$REL_FAMILY_ID[which(data_all_baseline$dup==1)])
+ 
+
+data_all_trial <- data_all_trial%>%
+                 filter(!REL_FAMILY_ID %in% family_exclude)%>%
+    drop_na(SITE_ID_L) %>%
+  filter(SITE_ID_L != "site22")
+
+
+```
+
+
+Subjects to be removed from ABCD documents named 3a. NDA 4.0 changes and known issues
+
+```{r}
+baseline_subj_remove <- readRDS(paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/baseline_subj_remove', '.RData'))
+
+followup_subj_remove <- readRDS(paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/followup_subj_remove', '.RData'))
+
+baseline_data_removed <- data_all_trial%>%
+  filter(EVENTNAME == "baseline_year_1_arm_1")%>%
+                 filter(!SUBJECTKEY %in% baseline_subj_remove)
+
+followup_data_removed <- data_all_trial%>%
+  filter(EVENTNAME == "2_year_follow_up_y_arm_1")%>%
+                 filter(!SUBJECTKEY %in% followup_subj_remove)
+
+data_all_trial <- rbind(baseline_data_removed,followup_data_removed)
+```
+
+
+## set up variable names
+
+```{r}
+TaskDVs1Batch = c("NIHTBX_PICVOCAB_UNCORRECTED", 
+                  "NIHTBX_READING_UNCORRECTED",
+              "NIHTBX_FLANKER_UNCORRECTED",
+              "NIHTBX_PATTERN_UNCORRECTED",
+              "NIHTBX_PICTURE_UNCORRECTED",
+               "PEA_RAVLT_LD_TRIAL_VII_TC")
+
+
+subj_info <- c('SUBJECTKEY', 'SITE_ID_L',"EVENTNAME")
+```
+
+
+# Set up the sets of brain features
+
+## Getting all the contrasts
+
+```{r}
+### get the names of the contrasts for all the modalities
+
+nback_contrasts <- NBackDestAsegQCed%>%
+                   select(ends_with("Left.Cerebellum.Cortex"))%>%
+                   colnames()%>%
+                   str_remove_all("Left.Cerebellum.Cortex")%>%
+                   print()
+
+MID_contrasts <- MIDDestAsegQCed%>%
+                   select(ends_with("Left.Cerebellum.Cortex"))%>%
+                   colnames()%>%
+                   str_remove_all("Left.Cerebellum.Cortex")%>%
+                   print()
+
+SST_contrasts <- SSTDestAsegQCed%>%
+                   select(ends_with("Left.Cerebellum.Cortex"))%>%
+                   colnames()%>%
+                   str_remove_all("Left.Cerebellum.Cortex")%>%
+                   print()
+
+
+## "Within" and  "avg" comprise one modality
+
+rsmri_within <- RSBetNetExcludedNoCOMBATABCD4%>%
+                   select(ends_with("Auditory"))%>%
+                   colnames()%>%
+                   str_remove_all("Auditory")%>%
+                   print()
+
+
+
+
+
+rsmri_avg <- RSBetNetExcludedNoCOMBATABCD4%>%
+                   select(ends_with("AuditoryCinguloOpercular"))%>%
+                   colnames()%>%
+                   str_remove_all("AuditoryCinguloOpercular")%>%
+                   print()
+
+
+###  "rsmri_var_gordon_ROI_" and "rsmri_var_aseg_ROI_" are one modality
+
+
+rsmri_gordon <- rsmri_variance_gordon_aseg%>%
+                   select(ends_with("SMhand_1"))%>%
+                   colnames()%>%
+                   str_remove_all("SMhand_1")%>%
+                   print()
+
+
+rsmri_aseg <- rsmri_variance_gordon_aseg%>%
+                   select(ends_with("Left.Cerebellum.Cortex"))%>%
+                   colnames()%>%
+                   str_remove_all("Left.Cerebellum.Cortex")%>%
+                   print()
+
+
+
+
+smri_T1_aseg <- sMRI.T1Weighted%>%
+                   select(ends_with("Left.Cerebellum.Cortex"))%>%
+                   colnames()%>%
+                   str_remove_all("Left.Cerebellum.Cortex")%>%
+                   print()
+
+
+smri_T2_aseg <- sMRI.T2Weighted%>%
+                   select(ends_with("Left.Cerebellum.Cortex"))%>%
+                   colnames()%>%
+                   str_remove_all("Left.Cerebellum.Cortex")%>%
+                   print()
+
+
+smri_T1_dest <- sMRI.T1Weighted%>%
+                   select(ends_with("lh_G_and_S_paracentral"))%>%
+                   colnames()%>%
+                   str_remove_all("lh_G_and_S_paracentral")%>%
+                   print()
+
+
+smri_T2_dest <- sMRI.T2Weighted%>%
+                   select(ends_with("lh_G_and_S_paracentral"))%>%
+                   colnames()%>%
+                   str_remove_all("lh_G_and_S_paracentral")%>%
+                   print()
+
+
+smri_T1_mean_total <- c('Dest_total_area','Dest_total_volumn','Dest_mean_thickness','Dest_mean_sulcal_depth','mean_T1_Avg_white','mean_T1_Avg_gray','mean_T1_normalised','subcorticalgrayvolume','Avg_T1_whole_Cerebellum_Cortex_ASEG' )
+  
+  
+smri_T2_mean_total <- c('mean_T2_Avg_white','mean_T2_Avg_gray','mean_T2_normalised','Avg_T2_whole_Cerebellum_Cortex_ASEG' )
+
+```
+
+
+## split all the data tables based on the contrasts
+
+
+```{r}
+one_contrast_extract <- function(name_input ){
+ data_output = select(data_all_trial, starts_with(name_input),all_of(subj_info))
+ return(data_output)
+}
+nback_list <- nback_contrasts %>% map(., ~one_contrast_extract(name_input = .))
+
+MID_list <-    MID_contrasts%>% map(., ~one_contrast_extract(name_input = .))
+
+SST_list <- SST_contrasts %>% map(., ~one_contrast_extract(name_input = .))
+
+cog_data <- select(data_all_trial,all_of(TaskDVs1Batch),all_of(subj_info))
+
+rsmri_within_avg_data <- select(data_all_trial,all_of(RSBetNetExcludedNoCOMBATABCD4_selected_names), all_of(subj_info))
+
+rsmri_gordon_aseg_data <- select(data_all_trial,starts_with(rsmri_gordon),starts_with(rsmri_aseg), all_of(subj_info))
+
+rsmri_subnet <- select(data_all_trial,all_of(RSSubNetExcludedNoCOMBATedABCD4_selected_names), all_of(subj_info))
+
+
+smri_T1_aseg_list <- smri_T1_aseg %>% map(., ~one_contrast_extract(name_input = .))
+
+smri_T2_aseg_list <- smri_T2_aseg %>% map(., ~one_contrast_extract(name_input = .))
+
+smri_T1_dest_list <- smri_T1_dest %>% map(., ~one_contrast_extract(name_input = .))
+
+smri_T2_dest_list <- smri_T2_dest %>% map(., ~one_contrast_extract(name_input = .))
+
+smri_T1_mean_total_data <- select(data_all_trial,starts_with(smri_T1_mean_total), all_of(subj_info))
+
+smri_T2_mean_total_data <- select(data_all_trial,starts_with(smri_T2_mean_total), all_of(subj_info))
+
+
+##### processing DTI data
+
+DTI_select <- DTI_FA23Tracks %>% select(starts_with("FA_"), all_of(c("EVENTNAME","SUBJECTKEY")))
+
+suj_info_tibble <- data_all_trial %>% select(all_of(subj_info))
+
+DTI_data <- left_join(DTI_select,suj_info_tibble,by = c("EVENTNAME","SUBJECTKEY"))
+
+
+
+
+
+```
+
+
+## Saving up all the outputs
+
+```{r,eval=FALSE,echo=FALSE}
+### all the recipes are uploaded to Nesi
+###tuning hyper-parameters are done on nesi
+
+map2(.x = nback_contrasts, .y = nback_list, ~saveRDS(.y, 
+                                    paste0(scriptfold,'stacking_gfactor_modelling/data/',.x,'.RDS')))
+
+map2(.x = MID_contrasts, .y = MID_list, ~saveRDS(.y, 
+                          paste0(scriptfold,'stacking_gfactor_modelling/data/',.x , '.RDS')))
+
+map2(.x = SST_contrasts, .y = SST_list, ~saveRDS(.y, 
+                          paste0(scriptfold,'stacking_gfactor_modelling/data/',.x , '.RDS')))
+
+saveRDS(cog_data, paste0(scriptfold,'stacking_gfactor_modelling/data/cog_data.RDS'))
+
+saveRDS(rsmri_within_avg_data, paste0(scriptfold,'stacking_gfactor_modelling/data/rsmri_within_avg_data.RDS'))
+
+saveRDS(rsmri_gordon_aseg_data, paste0(scriptfold,'stacking_gfactor_modelling/data/rsmri_gordon_aseg_data.RDS'))
+
+saveRDS(rsmri_subnet, paste0(scriptfold,'stacking_gfactor_modelling/data/rsmri_subnet.RDS'))
+
+
+
+map2(.x = smri_T1_aseg, .y = smri_T1_aseg_list, ~saveRDS(.y, 
+                          paste0(scriptfold,'stacking_gfactor_modelling/data/',.x , '.RDS')))
+map2(.x = smri_T2_aseg, .y = smri_T2_aseg_list, ~saveRDS(.y, 
+                          paste0(scriptfold,'stacking_gfactor_modelling/data/',.x , '.RDS')))
+map2(.x = smri_T1_dest, .y = smri_T1_dest_list, ~saveRDS(.y, 
+                          paste0(scriptfold,'stacking_gfactor_modelling/data/',.x , '.RDS')))
+map2(.x = smri_T2_dest, .y = smri_T2_dest_list, ~saveRDS(.y, 
+                          paste0(scriptfold,'stacking_gfactor_modelling/data/',.x , '.RDS')))
+
+
+
+saveRDS(smri_T1_mean_total_data, paste0(scriptfold,'stacking_gfactor_modelling/data/smri_T1_mean_total_data.RDS'))
+
+saveRDS(smri_T2_mean_total_data, paste0(scriptfold,'stacking_gfactor_modelling/data/smri_T2_mean_total_data.RDS'))
+saveRDS(DTI_data, paste0(scriptfold,'stacking_gfactor_modelling/data/DTI_data.RDS'))
+
+```
+
+## print out the feature names for each modality
+
+
+```{r}
+feature_name_print <- function(data_input){
+  col_names <- data_input %>% select(-all_of(subj_info))%>% colnames()
+  print(col_names)
+}
+
+
+map(nback_list,~feature_name_print(data_input = .))
+
+map(MID_list,~feature_name_print(data_input = .))
+
+
+map(SST_list,~feature_name_print(data_input = .))
+
+
+feature_name_print(data_input =rsmri_within_avg_data)
+
+feature_name_print(data_input =rsmri_gordon_aseg_data)
+
+feature_name_print(data_input =rsmri_subnet)
+
+map(smri_T1_aseg_list,~feature_name_print(data_input = .))
+
+
+map(smri_T2_aseg_list,~feature_name_print(data_input = .))
+
+
+map(smri_T1_dest_list,~feature_name_print(data_input = .))
+
+
+map(smri_T2_dest_list,~feature_name_print(data_input = .))
+
+feature_name_print(data_input =smri_T1_mean_total_data)
+feature_name_print(data_input =smri_T2_mean_total_data)
+feature_name_print(data_input =DTI_data)
+
+
+
+```
+
+
+
+
+
+```{r}
+
+
+rsmri_gordon_aseg_trial <- readRDS(paste0(scriptfold,'stacking_gfactor_modelling/data/rsmri_gordon_aseg_data.RDS'))
+
+
+```
+
+
+

@@ -1,0 +1,1289 @@
+---
+title: "Prepare elastic net predictions to fit the stacking models"
+author: "Yue Wang and Narun P"
+date:  "`r format(Sys.time(), '%d %b, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    number_sections: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r load_data, echo=FALSE}
+rm(list = ls(all.names = TRUE)) #will clear all objects includes hidden objects.
+gc() #free up memory and report the memory usage.
+```
+
+## Note
+Here we the ABCD release 3.0 data-set
+
+## Loading libraries
+The following libraries and default settings were used during the analysis:
+
+
+```{r load_libraries}
+options(scipen = 999)
+#library("sva")
+library(tidyverse)
+library("tidymodels")
+##parallel map
+
+theme_set(theme_bw() + theme(panel.grid = element_blank()))
+## parallel processing number of cores register
+all_cores <- parallel::detectCores(logical = FALSE) - 10
+
+doParallel::registerDoParallel(cores = all_cores)
+
+```
+
+# Data Preparation
+
+
+We first loaded all of the relevant data files (not shown here as they refer to local directories):
+
+```{r loading_data, echo=FALSE}
+# from Qnap data windows
+#datafolder = "//np-qnapa/Data/ABCD/ABCD4/ABCD4SQL/"
+#scriptfold = "//np-qnapa/Data/Yue script/"
+#NDAfold = "//np-qnapa/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#utilFold = "//np-qnapa/Data/ABCD/ABCD3/Analysis/utilFunc/"
+#studyNDAFold = "//np-qnapa/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#outputfolder = "//np-qnapa/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+
+
+### linux directory
+#datafolder = "/media/Data/ABCD/ABCD4/ABCD4SQL/"
+#scriptfold = "/media/Data/Yue script/"
+#NDAfold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#utilFold = "/media/Data/ABCD/ABCD3/Analysis/utilFunc/"
+#studyNDAFold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#outputfolder = "/media/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+#featurefolder = "/media/Data/ABCD/ABCD4/Analysis/ManipulatedData/"
+
+### apple directory
+
+datafolder = "/Volumes/Data/ABCD/ABCD4/ABCD4SQL/"
+scriptfold = "/Volumes/Data/Yue script/"
+NDAfold = "/Volumes/Data/ABCD/ABCD4/ABCDStudyNDA/"
+utilFold = "/Volumes/Data/ABCD/ABCD3/Analysis/utilFunc/"
+studyNDAFold = "/Volumes/Data/ABCD/ABCD4/ABCDStudyNDA/"
+outputfolder = "/Volumes/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+featurefolder = "/Volumes/Data/ABCD/ABCD4/Analysis/ManipulatedData/"
+
+source(paste0(scriptfold,"stacking_gfactor_modelling/r_functions.R"))
+
+
+```
+
+list of modality names
+
+```{r}
+scan_names <- c("smri_T2_mean_total_data","smri_T1_mean_total_data", "Normalised_T2_", "Avg_T2_Gray_", "Avg_T2_White_", "Normalised_T1_", "Avg_T1_Gray_", "Avg_T1_White_", "Dest_Sulcal_Depth_", "Dest_Vol_", "Dest_Area_", "Dest_Thick_", "Vol_ASEG_", "Avg_T2_ASEG_", "Avg_T1_ASEG_Vol_", "rsmri_gordon_aseg_data", "rsmri_within_avg_data", "incorrectgovsincorrectstop_ROI_", "incorrectgovscorrectgo_ROI_", "correctstopvsincorrectstop_ROI_", "anystopvscorrectgo_ROI_", "incorrectstopvscorrectgo_ROI_", "correctstopvscorrectgo_ROI_", "correctgovsfixation_ROI_", "antiLargeLossVsSmallLoss_ROI_", "antiSmallLossVsNeu_ROI_", "antiLargeLossVsNeu_ROI_", "antiLargeRewVsSmallRew_ROI_", "antiSmallRewVsNeu_ROI_", "antiLargeRewVsNeu_ROI_", "feedPunPosVsNeg_ROI_", "feedRewPosVsNeg_ROI_", "antiLosVsNeu_ROI_", "antiRewVsNeu_ROI_", "posfacevsneutface_ROI_", "negfacevsneutface_ROI_", "facevsplace_ROI_", "emotionvsneutface_ROI_", "X2backvs0back_ROI_", "emotion_ROI_","place_ROI_", "X2back_ROI_", "X0back_ROI_","rsmri_subnet")
+
+new_scan_names <- c("smri_T2_mean_total_data","smri_T1_mean_total_data", "Normalised_T2_", "Avg_T2_Gray_", "Avg_T2_White_", "Normalised_T1_", "Avg_T1_Gray_", "Avg_T1_White_", "Dest_Sulcal_Depth_", "Dest_Vol_", "Dest_Area_", "Dest_Thick_", "Vol_ASEG_", "Avg_T2_ASEG_", "Avg_T1_ASEG_Vol_", "rsmri_gordon_aseg_data", "rsmri_within_avg_data", "incorrectgovsincorrectstop_ROI_", "incorrectgovscorrectgo_ROI_", "correctstopvsincorrectstop_ROI_", "anystopvscorrectgo_ROI_", "incorrectstopvscorrectgo_ROI_", "correctstopvscorrectgo_ROI_", "correctgovsfixation_ROI_", "antiLargeLossVsSmallLoss_ROI_", "antiSmallLossVsNeu_ROI_", "antiLargeLossVsNeu_ROI_", "antiLargeRewVsSmallRew_ROI_", "antiSmallRewVsNeu_ROI_", "antiLargeRewVsNeu_ROI_", "feedPunPosVsNeg_ROI_", "feedRewPosVsNeg_ROI_", "antiLosVsNeu_ROI_", "antiRewVsNeu_ROI_", "posfacevsneutface_ROI_", "negfacevsneutface_ROI_", "facevsplace_ROI_", "emotionvsneutface_ROI_", "X2backvs0back_ROI_", "emotion_ROI_","place_ROI_", "X2back_ROI_", "X0back_ROI_","DTI_data","rsmri_subnet")
+
+subj_info <- c("SUBJECTKEY","SITE_ID_L" , "EVENTNAME")                               
+
+
+enet_scan_output_list <- vector(mode = "list",length = length(scan_names))
+
+names(enet_scan_output_list) <- scan_names
+```
+
+```{r,eval=FALSE}
+enet_scan_output_list <- map(scan_names,~readRDS(paste0(scriptfold,"stacking_gfactor_modelling/enet_collate_results/",.,".enet_results.RDS")))
+
+enet_scan_data_list <-  map(scan_names,~readRDS(paste0(scriptfold,"stacking_gfactor_modelling/data/",.,".RDS")))
+
+
+```
+
+### read the data in 
+
+read the data in one by one and extract the useful information
+
+```{r,eval=TRUE}
+
+extract_pred_data <- function(modality_input){
+ list_input <-  readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/",modality_input,".enet_results.RDS"))
+
+baseline_train_pred <- map(list_input,"baseline_train_pred")
+
+baseline_train_pred_tibble <- map(baseline_train_pred,"model_predict")
+
+baseline_train_data <- map(list_input,"train_baseline_data")
+
+baseline_test_pred <- map(list_input,"baseline_test_pred")
+
+baseline_test_pred_tibble <- map(baseline_test_pred,"model_predict")
+
+baseline_test_data <- map(list_input,"test_baseline_data")
+
+followup_train_pred <- map(list_input,"followup_train_pred")
+
+followup_train_pred_tibble <- map(followup_train_pred,"model_predict")
+
+followup_train_data <- map(list_input,"train_followup_data")
+
+followup_test_pred <- map(list_input,"followup_test_pred")
+
+followup_test_pred_tibble <- map(followup_test_pred,"model_predict")
+
+followup_test_data <- map(list_input,"test_followup_data")
+
+
+
+return(list(
+  baseline_train_pred_tibble=baseline_train_pred_tibble,
+  baseline_train_data=baseline_train_data,
+  baseline_test_pred_tibble = baseline_test_pred_tibble,
+  baseline_test_data =baseline_test_data,
+  followup_train_pred_tibble=followup_train_pred_tibble,
+  followup_train_data=followup_train_data,
+  followup_test_pred_tibble = followup_test_pred_tibble,
+  followup_test_data =followup_test_data
+))
+}
+```
+
+
+```{r}
+name_change <- function(names_input,data_input){
+  names(data_input)=c(subj_info,names_input)
+  return(data_input)
+}
+
+
+random_forest_data_processing <- function(pred_input,data_input,name_input){
+  pred_input_select <- map(pred_input,~select(.,"model_predict"))
+  pred_data_all <- map2(.x = pred_input_select,.y = data_input, ~bind_cols(.x,.y)%>%
+                                                                 select(all_of(subj_info),"model_predict"))
+  output_data <-map(.x=pred_data_all,~name_change(names_input = name_input,data_input = .x)) 
+  return(output_data)
+}
+
+extract_rf_data <- function(modality_input){
+ list_input <-  readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_enet_results_loaded_gfactor/",modality_input,".enet_results.RDS"))
+
+baseline_train_pred <- map(list_input,"baseline_train_pred")
+
+baseline_train_pred_tibble <- map(baseline_train_pred,"model_predict")
+
+baseline_train_data <- map(list_input,"train_baseline_data")
+
+baseline_test_pred <- map(list_input,"baseline_test_pred")
+
+baseline_test_pred_tibble <- map(baseline_test_pred,"model_predict")
+
+baseline_test_data <- map(list_input,"test_baseline_data")
+
+followup_train_pred <- map(list_input,"followup_train_pred")
+
+followup_train_pred_tibble <- map(followup_train_pred,"model_predict")
+
+followup_train_data <- map(list_input,"train_followup_data")
+
+followup_test_pred <- map(list_input,"followup_test_pred")
+
+followup_test_pred_tibble <- map(followup_test_pred,"model_predict")
+
+followup_test_data <- map(list_input,"test_followup_data")
+
+random_forest_data_list <- random_forest_data_processing(pred_input = baseline_train_pred_tibble, data_input = baseline_train_data, name_input = modality_input)
+
+random_forest_data_list_baseline_test <- random_forest_data_processing(pred_input = baseline_test_pred_tibble, data_input = baseline_test_data, name_input = modality_input)
+
+random_forest_data_list_followup_train <- random_forest_data_processing(pred_input = followup_train_pred_tibble, data_input = followup_train_data, name_input = modality_input)
+
+random_forest_data_list_follwup_test <- random_forest_data_processing(pred_input = followup_test_pred_tibble, data_input = followup_test_data, name_input = modality_input)
+
+return(list(
+  random_forest_data_list=random_forest_data_list,
+  random_forest_data_list_baseline_test=random_forest_data_list_baseline_test,
+  random_forest_data_list_followup_train = random_forest_data_list_followup_train,
+  random_forest_data_list_follwup_test =random_forest_data_list_follwup_test
+))
+}
+```
+
+
+
+
+```{r,eval=FALSE}
+smri_T2_mean_total_data <- extract_pred_data(modality_input = "smri_T2_mean_total_data")
+
+saveRDS(smri_T2_mean_total_data, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/smri_T2_mean_total_data.RDS"))
+
+```
+
+```{r,eval=FALSE}
+smri_T2_mean_total_data <- extract_rf_data(modality_input = "smri_T2_mean_total_data")
+
+saveRDS(smri_T2_mean_total_data, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/smri_T2_mean_total_data.RDS"))
+
+```
+
+```{r,eval=FALSE}
+smri_T1_mean_total_data <- extract_pred_data(modality_input = "smri_T1_mean_total_data")
+
+saveRDS(smri_T1_mean_total_data, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/smri_T1_mean_total_data.RDS"))
+
+```
+
+```{r,eval=FALSE}
+smri_T1_mean_total_data <- extract_rf_data(modality_input = "smri_T1_mean_total_data")
+
+saveRDS(smri_T1_mean_total_data, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/smri_T1_mean_total_data.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Normalised_T2_ <- extract_pred_data(modality_input = "Normalised_T2_")
+
+saveRDS(Normalised_T2_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/Normalised_T2_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Normalised_T2_ <- extract_rf_data(modality_input = "Normalised_T2_")
+
+saveRDS(Normalised_T2_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/Normalised_T2_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Avg_T2_Gray_ <- extract_pred_data(modality_input = "Avg_T2_Gray_")
+
+saveRDS(Avg_T2_Gray_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/Avg_T2_Gray_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Avg_T2_Gray_ <- extract_rf_data(modality_input = "Avg_T2_Gray_")
+
+saveRDS(Avg_T2_Gray_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/Avg_T2_Gray_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Avg_T2_White_ <- extract_pred_data(modality_input = "Avg_T2_White_")
+
+saveRDS(Avg_T2_White_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/Avg_T2_White_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Avg_T2_White_ <- extract_rf_data(modality_input = "Avg_T2_White_")
+
+saveRDS(Avg_T2_White_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/Avg_T2_White_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Normalised_T1_ <- extract_pred_data(modality_input = "Normalised_T1_")
+
+saveRDS(Normalised_T1_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/Normalised_T1_.RDS"))
+
+```
+
+
+```{r,eval=FALSE}
+Normalised_T1_ <- extract_rf_data(modality_input = "Normalised_T1_")
+
+saveRDS(Normalised_T1_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/Normalised_T1_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Avg_T1_Gray_ <- extract_pred_data(modality_input = "Avg_T1_Gray_")
+
+saveRDS(Avg_T1_Gray_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/Avg_T1_Gray_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Avg_T1_Gray_ <- extract_rf_data(modality_input = "Avg_T1_Gray_")
+
+saveRDS(Avg_T1_Gray_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/Avg_T1_Gray_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Avg_T1_White_ <- extract_pred_data(modality_input = "Avg_T1_White_")
+
+saveRDS(Avg_T1_White_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/Avg_T1_White_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Avg_T1_White_ <- extract_rf_data(modality_input = "Avg_T1_White_")
+
+saveRDS(Avg_T1_White_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/Avg_T1_White_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Dest_Sulcal_Depth_ <- extract_pred_data(modality_input = "Dest_Sulcal_Depth_")
+
+saveRDS(Dest_Sulcal_Depth_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/Dest_Sulcal_Depth_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Dest_Sulcal_Depth_ <- extract_rf_data(modality_input = "Dest_Sulcal_Depth_")
+
+saveRDS(Dest_Sulcal_Depth_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/Dest_Sulcal_Depth_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Dest_Vol_ <- extract_pred_data(modality_input = "Dest_Vol_")
+
+saveRDS(Dest_Vol_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/Dest_Vol_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Dest_Vol_ <- extract_rf_data(modality_input = "Dest_Vol_")
+
+saveRDS(Dest_Vol_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/Dest_Vol_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Dest_Area_ <- extract_pred_data(modality_input = "Dest_Area_")
+
+saveRDS(Dest_Area_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/Dest_Area_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Dest_Area_ <- extract_rf_data(modality_input = "Dest_Area_")
+
+saveRDS(Dest_Area_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/Dest_Area_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Dest_Thick_ <- extract_pred_data(modality_input = "Dest_Thick_")
+
+saveRDS(Dest_Thick_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/Dest_Thick_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Dest_Thick_ <- extract_rf_data(modality_input = "Dest_Thick_")
+
+saveRDS(Dest_Thick_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/Dest_Thick_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Vol_ASEG_ <- extract_pred_data(modality_input = "Vol_ASEG_")
+
+saveRDS(Vol_ASEG_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/Vol_ASEG_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Vol_ASEG_ <- extract_rf_data(modality_input = "Vol_ASEG_")
+
+saveRDS(Vol_ASEG_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/Vol_ASEG_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Avg_T2_ASEG_ <- extract_pred_data(modality_input = "Avg_T2_ASEG_")
+
+saveRDS(Avg_T2_ASEG_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/Avg_T2_ASEG_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Avg_T2_ASEG_ <- extract_rf_data(modality_input = "Avg_T2_ASEG_")
+
+saveRDS(Avg_T2_ASEG_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/Avg_T2_ASEG_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+Avg_T1_ASEG_Vol_ <- extract_pred_data(modality_input = "Avg_T1_ASEG_Vol_")
+
+saveRDS(Avg_T1_ASEG_Vol_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/Avg_T1_ASEG_Vol_.RDS"))
+
+```
+
+
+```{r,eval=FALSE}
+Avg_T1_ASEG_Vol_ <- extract_rf_data(modality_input = "Avg_T1_ASEG_Vol_")
+
+saveRDS(Avg_T1_ASEG_Vol_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/Avg_T1_ASEG_Vol_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+rsmri_gordon_aseg_data <- extract_pred_data(modality_input = "rsmri_gordon_aseg_data")
+
+saveRDS(rsmri_gordon_aseg_data, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/rsmri_gordon_aseg_data.RDS"))
+
+```
+
+```{r,eval=FALSE}
+rsmri_gordon_aseg_data <- extract_rf_data(modality_input = "rsmri_gordon_aseg_data")
+
+saveRDS(rsmri_gordon_aseg_data, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/rsmri_gordon_aseg_data.RDS"))
+
+```
+
+```{r,eval=FALSE}
+rsmri_within_avg_data <- extract_pred_data(modality_input = "rsmri_within_avg_data")
+
+saveRDS(rsmri_within_avg_data, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/rsmri_within_avg_data.RDS"))
+
+```
+
+
+
+```{r,eval=FALSE}
+rsmri_within_avg_data <- extract_rf_data(modality_input = "rsmri_within_avg_data")
+
+saveRDS(rsmri_within_avg_data, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/rsmri_within_avg_data.RDS"))
+
+```
+
+
+
+
+```{r,eval=FALSE}
+incorrectgovsincorrectstop_ROI_ <- extract_pred_data(modality_input = "incorrectgovsincorrectstop_ROI_")
+
+saveRDS(incorrectgovsincorrectstop_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/incorrectgovsincorrectstop_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+incorrectgovsincorrectstop_ROI_ <- extract_rf_data(modality_input = "incorrectgovsincorrectstop_ROI_")
+
+saveRDS(incorrectgovsincorrectstop_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/incorrectgovsincorrectstop_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+incorrectgovscorrectgo_ROI_ <- extract_pred_data(modality_input = "incorrectgovscorrectgo_ROI_")
+
+saveRDS(incorrectgovscorrectgo_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/incorrectgovscorrectgo_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+incorrectgovscorrectgo_ROI_ <- extract_rf_data(modality_input = "incorrectgovscorrectgo_ROI_")
+
+saveRDS(incorrectgovscorrectgo_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/incorrectgovscorrectgo_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+correctstopvsincorrectstop_ROI_ <- extract_pred_data(modality_input = "correctstopvsincorrectstop_ROI_")
+
+saveRDS(correctstopvsincorrectstop_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/correctstopvsincorrectstop_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+correctstopvsincorrectstop_ROI_ <- extract_rf_data(modality_input = "correctstopvsincorrectstop_ROI_")
+
+saveRDS(correctstopvsincorrectstop_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/correctstopvsincorrectstop_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+anystopvscorrectgo_ROI_ <- extract_pred_data(modality_input = "anystopvscorrectgo_ROI_")
+
+saveRDS(anystopvscorrectgo_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/anystopvscorrectgo_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+anystopvscorrectgo_ROI_ <- extract_rf_data(modality_input = "anystopvscorrectgo_ROI_")
+
+saveRDS(anystopvscorrectgo_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/anystopvscorrectgo_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+incorrectstopvscorrectgo_ROI_ <- extract_pred_data(modality_input = "incorrectstopvscorrectgo_ROI_")
+
+saveRDS(incorrectstopvscorrectgo_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/incorrectstopvscorrectgo_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+incorrectstopvscorrectgo_ROI_ <- extract_rf_data(modality_input = "incorrectstopvscorrectgo_ROI_")
+
+saveRDS(incorrectstopvscorrectgo_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/incorrectstopvscorrectgo_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+correctstopvscorrectgo_ROI_ <- extract_pred_data(modality_input = "correctstopvscorrectgo_ROI_")
+
+saveRDS(correctstopvscorrectgo_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/correctstopvscorrectgo_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+correctstopvscorrectgo_ROI_ <- extract_rf_data(modality_input = "correctstopvscorrectgo_ROI_")
+
+saveRDS(correctstopvscorrectgo_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/correctstopvscorrectgo_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+correctgovsfixation_ROI_ <- extract_pred_data(modality_input = "correctgovsfixation_ROI_")
+
+saveRDS(correctgovsfixation_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/correctgovsfixation_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+correctgovsfixation_ROI_ <- extract_rf_data(modality_input = "correctgovsfixation_ROI_")
+
+saveRDS(correctgovsfixation_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/correctgovsfixation_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+antiLargeLossVsSmallLoss_ROI_ <- extract_pred_data(modality_input = "antiLargeLossVsSmallLoss_ROI_")
+
+saveRDS(antiLargeLossVsSmallLoss_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/antiLargeLossVsSmallLoss_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+antiLargeLossVsSmallLoss_ROI_ <- extract_rf_data(modality_input = "antiLargeLossVsSmallLoss_ROI_")
+
+saveRDS(antiLargeLossVsSmallLoss_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/antiLargeLossVsSmallLoss_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+antiSmallLossVsNeu_ROI_ <- extract_pred_data(modality_input = "antiSmallLossVsNeu_ROI_")
+
+saveRDS(antiSmallLossVsNeu_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/antiSmallLossVsNeu_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+antiSmallLossVsNeu_ROI_ <- extract_rf_data(modality_input = "antiSmallLossVsNeu_ROI_")
+
+saveRDS(antiSmallLossVsNeu_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/antiSmallLossVsNeu_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+antiLargeLossVsNeu_ROI_ <- extract_pred_data(modality_input = "antiLargeLossVsNeu_ROI_")
+
+saveRDS(antiLargeLossVsNeu_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/antiLargeLossVsNeu_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+antiLargeLossVsNeu_ROI_ <- extract_rf_data(modality_input = "antiLargeLossVsNeu_ROI_")
+
+saveRDS(antiLargeLossVsNeu_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/antiLargeLossVsNeu_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+antiLargeRewVsSmallRew_ROI_ <- extract_pred_data(modality_input = "antiLargeRewVsSmallRew_ROI_")
+
+saveRDS(antiLargeRewVsSmallRew_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/antiLargeRewVsSmallRew_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+antiLargeRewVsSmallRew_ROI_ <- extract_rf_data(modality_input = "antiLargeRewVsSmallRew_ROI_")
+
+saveRDS(antiLargeRewVsSmallRew_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/antiLargeRewVsSmallRew_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+antiSmallRewVsNeu_ROI_ <- extract_pred_data(modality_input = "antiSmallRewVsNeu_ROI_")
+
+saveRDS(antiSmallRewVsNeu_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/antiSmallRewVsNeu_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+antiSmallRewVsNeu_ROI_ <- extract_rf_data(modality_input = "antiSmallRewVsNeu_ROI_")
+
+saveRDS(antiSmallRewVsNeu_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/antiSmallRewVsNeu_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+antiLargeRewVsNeu_ROI_ <- extract_pred_data(modality_input = "antiLargeRewVsNeu_ROI_")
+
+saveRDS(antiLargeRewVsNeu_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/antiLargeRewVsNeu_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+antiLargeRewVsNeu_ROI_ <- extract_rf_data(modality_input = "antiLargeRewVsNeu_ROI_")
+
+saveRDS(antiLargeRewVsNeu_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/antiLargeRewVsNeu_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+feedPunPosVsNeg_ROI_ <- extract_pred_data(modality_input = "feedPunPosVsNeg_ROI_")
+
+saveRDS(feedPunPosVsNeg_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/feedPunPosVsNeg_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+feedPunPosVsNeg_ROI_ <- extract_rf_data(modality_input = "feedPunPosVsNeg_ROI_")
+
+saveRDS(feedPunPosVsNeg_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/feedPunPosVsNeg_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+feedRewPosVsNeg_ROI_ <- extract_pred_data(modality_input = "feedRewPosVsNeg_ROI_")
+
+saveRDS(feedRewPosVsNeg_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/feedRewPosVsNeg_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+feedRewPosVsNeg_ROI_ <- extract_rf_data(modality_input = "feedRewPosVsNeg_ROI_")
+
+saveRDS(feedRewPosVsNeg_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/feedRewPosVsNeg_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+antiLosVsNeu_ROI_ <- extract_pred_data(modality_input = "antiLosVsNeu_ROI_")
+
+saveRDS(antiLosVsNeu_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/antiLosVsNeu_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+antiLosVsNeu_ROI_ <- extract_rf_data(modality_input = "antiLosVsNeu_ROI_")
+
+saveRDS(antiLosVsNeu_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/antiLosVsNeu_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+antiRewVsNeu_ROI_ <- extract_pred_data(modality_input = "antiRewVsNeu_ROI_")
+
+saveRDS(antiRewVsNeu_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/antiRewVsNeu_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+antiRewVsNeu_ROI_ <- extract_rf_data(modality_input = "antiRewVsNeu_ROI_")
+
+saveRDS(antiRewVsNeu_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/antiRewVsNeu_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+posfacevsneutface_ROI_ <- extract_pred_data(modality_input = "posfacevsneutface_ROI_")
+
+saveRDS(posfacevsneutface_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/posfacevsneutface_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+posfacevsneutface_ROI_ <- extract_rf_data(modality_input = "posfacevsneutface_ROI_")
+
+saveRDS(posfacevsneutface_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/posfacevsneutface_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+negfacevsneutface_ROI_ <- extract_pred_data(modality_input = "negfacevsneutface_ROI_")
+
+saveRDS(negfacevsneutface_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/negfacevsneutface_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+negfacevsneutface_ROI_ <- extract_rf_data(modality_input = "negfacevsneutface_ROI_")
+
+saveRDS(negfacevsneutface_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/negfacevsneutface_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+facevsplace_ROI_ <- extract_pred_data(modality_input = "facevsplace_ROI_")
+
+saveRDS(facevsplace_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/facevsplace_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+facevsplace_ROI_ <- extract_rf_data(modality_input = "facevsplace_ROI_")
+
+saveRDS(facevsplace_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/facevsplace_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+emotionvsneutface_ROI_ <- extract_pred_data(modality_input = "emotionvsneutface_ROI_")
+
+saveRDS(emotionvsneutface_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/emotionvsneutface_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+emotionvsneutface_ROI_ <- extract_rf_data(modality_input = "emotionvsneutface_ROI_")
+
+saveRDS(emotionvsneutface_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/emotionvsneutface_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+X2backvs0back_ROI_ <- extract_pred_data(modality_input = "X2backvs0back_ROI_")
+
+saveRDS(X2backvs0back_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/X2backvs0back_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+X2backvs0back_ROI_ <- extract_rf_data(modality_input = "X2backvs0back_ROI_")
+
+saveRDS(X2backvs0back_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/X2backvs0back_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+emotion_ROI_ <- extract_pred_data(modality_input = "emotion_ROI_")
+
+saveRDS(emotion_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/emotion_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+emotion_ROI_ <- extract_rf_data(modality_input = "emotion_ROI_")
+
+saveRDS(emotion_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/emotion_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+place_ROI_ <- extract_pred_data(modality_input = "place_ROI_")
+
+saveRDS(place_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/place_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+place_ROI_ <- extract_rf_data(modality_input = "place_ROI_")
+
+saveRDS(place_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/place_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+X2back_ROI_ <- extract_pred_data(modality_input = "X2back_ROI_")
+
+saveRDS(X2back_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/X2back_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+X2back_ROI_ <- extract_rf_data(modality_input = "X2back_ROI_")
+
+saveRDS(X2back_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/X2back_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+X0back_ROI_ <- extract_pred_data(modality_input = "X0back_ROI_")
+
+saveRDS(X0back_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/X0back_ROI_.RDS"))
+
+```
+
+```{r,eval=FALSE}
+X0back_ROI_ <- extract_rf_data(modality_input = "X0back_ROI_")
+
+saveRDS(X0back_ROI_, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/X0back_ROI_.RDS"))
+
+```
+
+
+```{r,eval=FALSE}
+rsmri_subnet <- extract_pred_data(modality_input = "rsmri_subnet")
+
+saveRDS(rsmri_subnet, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/rsmri_subnet.RDS"))
+
+```
+
+```{r,eval=FALSE}
+rsmri_subnet <- extract_rf_data(modality_input = "rsmri_subnet")
+
+saveRDS(rsmri_subnet, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/rsmri_subnet.RDS"))
+
+```
+
+
+### deal with datasets that have errors when doing the collecting
+
+```{r,eval=TRUE}
+ num_vec <- seq(1:21)%>% as.character()
+
+extract_pred_data_not_collect <- function(modality_input,vec_input){
+
+ list_input <-readRDS(paste0(scriptfold,"stacking_gfactor_modelling/enet_results_loaded_gfactor/",modality_input,".",vec_input,".RDS"))  
+
+baseline_train_pred <- list_input[["baseline_train_pred"]]
+
+baseline_train_pred_tibble <- baseline_train_pred[["model_predict"]]
+
+baseline_train_data <- list_input[["train_baseline_data"]]
+
+baseline_test_pred <- list_input[["baseline_test_pred"]]
+
+baseline_test_pred_tibble <- baseline_test_pred[["model_predict"]]
+
+baseline_test_data <- list_input[["test_baseline_data"]]
+
+followup_train_pred <- list_input[["followup_train_pred"]]
+
+followup_train_pred_tibble <- followup_train_pred[["model_predict"]]
+
+followup_train_data <- list_input[["train_followup_data"]]
+
+followup_test_pred <- list_input[["followup_test_pred"]]
+
+followup_test_pred_tibble <- followup_test_pred[["model_predict"]]
+
+followup_test_data <- list_input[["test_followup_data"]]
+return(list(
+  baseline_train_pred_tibble=baseline_train_pred_tibble,
+  baseline_train_data=baseline_train_data,
+  baseline_test_pred_tibble = baseline_test_pred_tibble,
+  baseline_test_data =baseline_test_data,
+  followup_train_pred_tibble=followup_train_pred_tibble,
+  followup_train_data=followup_train_data,
+  followup_test_pred_tibble = followup_test_pred_tibble,
+  followup_test_data =followup_test_data,
+  site =unique(baseline_test_data$SITE_ID_L)
+))
+}
+```
+
+
+```{r}
+random_forest_data_processing_not_collect <- function(pred_input,data_input,name_input){
+  pred_input_select <-select(pred_input,"model_predict")
+  pred_data_all <- bind_cols(pred_input_select,data_input)%>%
+                      select(all_of(subj_info),"model_predict")
+  output_data <-name_change(names_input = name_input,data_input = pred_data_all)
+  return(output_data)
+}
+
+
+extract_rf_data_not_collect <- function(modality_input,vec_input){
+ list_input <-readRDS(paste0(scriptfold,"stacking_gfactor_modelling/enet_results_loaded_gfactor/",modality_input,".",vec_input,".RDS"))  
+
+baseline_train_pred <- list_input[["baseline_train_pred"]]
+
+baseline_train_pred_tibble <- baseline_train_pred[["model_predict"]]
+
+baseline_train_data <- list_input[["train_baseline_data"]]
+
+baseline_test_pred <- list_input[["baseline_test_pred"]]
+
+baseline_test_pred_tibble <- baseline_test_pred[["model_predict"]]
+
+baseline_test_data <- list_input[["test_baseline_data"]]
+
+followup_train_pred <- list_input[["followup_train_pred"]]
+
+followup_train_pred_tibble <- followup_train_pred[["model_predict"]]
+
+followup_train_data <- list_input[["train_followup_data"]]
+
+followup_test_pred <- list_input[["followup_test_pred"]]
+
+followup_test_pred_tibble <- followup_test_pred[["model_predict"]]
+
+followup_test_data <- list_input[["test_followup_data"]]
+
+random_forest_data_list <- random_forest_data_processing_not_collect(pred_input = baseline_train_pred_tibble, data_input = baseline_train_data, name_input = modality_input)
+
+random_forest_data_list_baseline_test <- random_forest_data_processing_not_collect(pred_input = baseline_test_pred_tibble, data_input = baseline_test_data, name_input = modality_input)
+
+random_forest_data_list_followup_train <- random_forest_data_processing_not_collect(pred_input = followup_train_pred_tibble, data_input = followup_train_data, name_input = modality_input)
+
+random_forest_data_list_follwup_test <- random_forest_data_processing_not_collect(pred_input = followup_test_pred_tibble, data_input = followup_test_data, name_input = modality_input)
+
+return(list(
+  random_forest_data_list=random_forest_data_list,
+  random_forest_data_list_baseline_test=random_forest_data_list_baseline_test,
+  random_forest_data_list_followup_train = random_forest_data_list_followup_train,
+  random_forest_data_list_follwup_test =random_forest_data_list_follwup_test
+))
+}
+
+
+
+```
+
+```{r,eval=FALSE}
+rsmri_within_avg_data <- vector("list",length = length(num_vec)) 
+for(i in 1:length(num_vec)){
+  rsmri_within_avg_data[[i]] <- extract_pred_data_not_collect(modality_input = "rsmri_within_avg_data",vec_input = num_vec[i])
+}
+#rsmri_within_avg_data<-map(.x =num_vec ,~extract_pred_data_not_collect(modality_input = "rsmri_within_avg_data",vec_input = .x)) 
+
+saveRDS(rsmri_within_avg_data, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/rsmri_within_avg_data.RDS"))
+
+```
+
+```{r,eval=FALSE}
+rsmri_within_avg_data <- vector("list",length = length(num_vec)) 
+for(i in 1:length(num_vec)){
+  rsmri_within_avg_data[[i]] <- extract_rf_data_not_collect(modality_input = "rsmri_within_avg_data",vec_input = num_vec[i])
+}
+#rsmri_within_avg_data<-map(.x =num_vec ,~extract_pred_data_not_collect(modality_input = "rsmri_within_avg_data",vec_input = .x)) 
+test_rsmri_data <- map(rsmri_within_avg_data,"random_forest_data_list_baseline_test")
+test_rsmri_site <- map(test_rsmri_data,~select(.x,SITE_ID_L)%>% unique())%>% do.call(rbind,.)
+names(rsmri_within_avg_data) <- test_rsmri_site$SITE_ID_L
+saveRDS(rsmri_within_avg_data, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/rsmri_within_avg_data.RDS"))
+
+```
+
+```{r,eval=FALSE}
+DTI_data <- vector("list",length = length(num_vec)) 
+for(i in 1:length(num_vec)){
+  DTI_data[[i]] <- extract_pred_data_not_collect(modality_input = "DTI_data",vec_input = num_vec[i])
+}
+
+saveRDS(DTI_data, paste0(scriptfold,"stacking_gfactor_modelling/output_data_loaded_gfactor/DTI_data.RDS"))
+
+
+```
+
+```{r,eval=FALSE}
+DTI_data <- vector("list",length = length(num_vec)) 
+for(i in 1:length(num_vec)){
+  DTI_data[[i]] <- extract_rf_data_not_collect(modality_input = "DTI_data",vec_input = num_vec[i])
+}
+
+test_dti_data <- map(DTI_data,"random_forest_data_list_baseline_test")
+test_dti_site <- map(test_dti_data,~select(.x,SITE_ID_L)%>% unique())%>% do.call(rbind,.)
+names(DTI_data) <- test_dti_site$SITE_ID_L
+saveRDS(DTI_data, paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/DTI_data.RDS"))
+
+
+```
+
+
+
+
+
+```{r}
+part_scan_names <- c("smri_T2_mean_total_data","smri_T1_mean_total_data", "Normalised_T2_", "Avg_T2_Gray_", "Avg_T2_White_", "Normalised_T1_", "Avg_T1_Gray_", "Avg_T1_White_", "Dest_Sulcal_Depth_", "Dest_Vol_", "Dest_Area_", "Dest_Thick_", "Vol_ASEG_", "Avg_T2_ASEG_", "Avg_T1_ASEG_Vol_", "rsmri_gordon_aseg_data",  "incorrectgovsincorrectstop_ROI_", "incorrectgovscorrectgo_ROI_", "correctstopvsincorrectstop_ROI_", "anystopvscorrectgo_ROI_", "incorrectstopvscorrectgo_ROI_", "correctstopvscorrectgo_ROI_", "correctgovsfixation_ROI_", "antiLargeLossVsSmallLoss_ROI_", "antiSmallLossVsNeu_ROI_", "antiLargeLossVsNeu_ROI_", "antiLargeRewVsSmallRew_ROI_", "antiSmallRewVsNeu_ROI_", "antiLargeRewVsNeu_ROI_", "feedPunPosVsNeg_ROI_", "feedRewPosVsNeg_ROI_", "antiLosVsNeu_ROI_", "antiRewVsNeu_ROI_", "posfacevsneutface_ROI_", "negfacevsneutface_ROI_", "facevsplace_ROI_", "emotionvsneutface_ROI_", "X2backvs0back_ROI_", "emotion_ROI_","place_ROI_", "X2back_ROI_", "X0back_ROI_","rsmri_subnet")
+
+
+scan_enet_pred_list <- map(part_scan_names,~readRDS(paste0(scriptfold,"/stacking_gfactor_modelling/enet_output_data_loaded_gfactor/",.,".RDS")))
+
+names(scan_enet_pred_list) <- part_scan_names
+
+site_char <- names(scan_enet_pred_list[["smri_T1_mean_total_data"]][["random_forest_data_list"]])
+```
+
+
+
+
+```{r}
+
+#baseline_train_pred_list <- map(scan_enet_pred_list,"baseline_train_pred_tibble")
+
+#baseline_train_data_list <- map(scan_enet_pred_list,"baseline_train_data")
+
+
+#baseline_test_pred_list <- map(scan_enet_pred_list,"baseline_test_pred_tibble")
+
+#baseline_test_data_list <- map(scan_enet_pred_list,"baseline_test_data")
+
+#followup_train_pred_list <- map(scan_enet_pred_list,"followup_train_pred_tibble")
+#followup_train_data_list <- map(scan_enet_pred_list,"followup_train_data")
+
+
+#followup_test_pred_list <- map(scan_enet_pred_list,"followup_test_pred_tibble")
+#followup_test_data_list <- map(scan_enet_pred_list,"followup_test_data")
+```
+
+
+
+```{r}
+
+#random_forest_data_list <- pmap(list(baseline_train_pred_list,baseline_train_data_list,scan_names),
+#                                ~random_forest_data_processing(pred_input = ..1, data_input = ..2, name_input = ..3))
+
+#random_forest_data_list_baseline_test <- pmap(list(baseline_test_pred_list,baseline_test_data_list,scan_names),
+#                                ~random_forest_data_processing(pred_input = ..1, data_input = ..2, name_input = ..3))
+
+
+#random_forest_data_list_followup_train <- pmap(list(followup_train_pred_list,followup_train_data_list,scan_names),
+#                                ~random_forest_data_processing(pred_input = ..1, data_input = ..2, name_input = ..3))
+
+
+#random_forest_data_list_follwup_test <- pmap(list(followup_test_pred_list,followup_test_data_list,scan_names),
+#                                ~random_forest_data_processing(pred_input = ..1, data_input = ..2, name_input = ..3))
+
+rf_baseline_train <- map(scan_enet_pred_list,"random_forest_data_list")
+rf_baseline_test <- map(scan_enet_pred_list,"random_forest_data_list_baseline_test")
+rf_followup_train <- map(scan_enet_pred_list,"random_forest_data_list_followup_train")
+rf_followup_test <- map(scan_enet_pred_list,"random_forest_data_list_follwup_test")
+##made a typo here when writing up the previous function
+
+
+
+random_forest_data_cross_site <- function(list_input= rf_baseline_train, site_input){
+  one_site_list <- map(list_input,site_input)
+  one_site_tibble <- plyr::join_all(one_site_list,by = subj_info,type = "full")
+  return(one_site_tibble)
+}
+
+random_forest_site <- map(.x = site_char,~random_forest_data_cross_site(site_input = .))
+
+random_forest_site_baseline_test <- map(.x = site_char,~random_forest_data_cross_site(list_input =rf_baseline_test,site_input = .))
+
+random_forest_site_followup_train <- map(.x = site_char,~random_forest_data_cross_site(list_input =rf_followup_train,site_input = .))
+
+random_forest_site_followup_test <- map(.x = site_char,~random_forest_data_cross_site(list_input =rf_followup_test,site_input = .))
+
+
+new_names <- str_remove_all(scan_names,"data")
+new_names <- str_remove_all(new_names,"ROI\\_")
+
+test_rf_site <- map(random_forest_site_baseline_test,~select(.x,SITE_ID_L)%>% unique())%>% do.call(rbind,.)
+train_rf_site <- map(random_forest_site,~select(.x,SITE_ID_L)%>% unique())
+followup_test_rf_site <- map(random_forest_site_followup_test,~select(.x,SITE_ID_L)%>% unique())%>% do.call(rbind,.)
+
+identical(test_rf_site,followup_test_rf_site)
+
+names(random_forest_site) <- test_rf_site$SITE_ID_L
+
+names(random_forest_site_baseline_test) <- test_rf_site$SITE_ID_L
+
+names(random_forest_site_followup_train) <- test_rf_site$SITE_ID_L
+
+names(random_forest_site_followup_test) <- test_rf_site$SITE_ID_L
+
+```
+
+load DTI data
+
+
+
+
+```{r}
+
+DTI_data <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/DTI_data.RDS"))
+
+dti_rf_baseline_train <- map(DTI_data,"random_forest_data_list")
+dti_rf_baseline_test <- map(DTI_data,"random_forest_data_list_baseline_test")
+dti_rf_followup_train <- map(DTI_data,"random_forest_data_list_followup_train")
+dti_rf_followup_test <- map(DTI_data,"random_forest_data_list_follwup_test")
+
+```
+
+
+```{r}
+rsmri_within_avg_data <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/enet_output_data_loaded_gfactor/rsmri_within_avg_data.RDS"))
+
+rsrmi_rf_baseline_train <- rsmri_within_avg_data[["random_forest_data_list"]]
+rsmri_rf_baseline_test <- rsmri_within_avg_data[["random_forest_data_list_baseline_test"]]
+rsmri_rf_followup_train <- rsmri_within_avg_data[["random_forest_data_list_followup_train"]]
+rsmri_rf_followup_test <- rsmri_within_avg_data[["random_forest_data_list_follwup_test"]]
+```
+
+### join other modalities with dti
+
+```{r}
+
+join_dti_rsmri_site <- function(site_input,rsmri_data_input,
+                                dti_data_input=dti_rf_baseline_train,
+                                random_forest_data_input=random_forest_site){
+  dti_input <- dti_data_input[[site_input]]
+  rsmri_input <- rsmri_data_input[[site_input]]
+  random_forest_input <- random_forest_data_input[[site_input]]
+  data_output <- plyr::join_all(list(dti_input,rsmri_input,random_forest_input),type = "full",by = subj_info)
+  return(data_output)
+}
+
+random_forest_all <- site_char %>% map(.,~join_dti_rsmri_site(site_input = .,rsmri_data_input=rsrmi_rf_baseline_train))
+
+random_forest_all_baseline_test <- site_char %>% map(.,~join_dti_rsmri_site(site_input = .,
+                                                                      dti_data_input=dti_rf_baseline_test,
+                                                                      rsmri_data_input =rsmri_rf_baseline_test,
+                                                                      random_forest_data_input=random_forest_site_baseline_test))
+
+random_forest_all_followup_train <- site_char %>% map(.,~join_dti_rsmri_site(site_input = .,
+                                                                      dti_data_input=dti_rf_followup_train,
+                                                                      rsmri_data_input =rsmri_rf_followup_train,
+                                                                      random_forest_data_input=random_forest_site_followup_train))
+
+
+random_forest_all_followup_test <- site_char %>% map(.,~join_dti_rsmri_site(site_input = .,
+                                                                      dti_data_input=dti_rf_followup_test,
+                                                                      rsmri_data_input =rsmri_rf_followup_test,
+                                                                      random_forest_data_input=random_forest_site_followup_test))
+test_all_site <- map(random_forest_all_baseline_test,~select(.x,SITE_ID_L)%>% unique())%>% do.call(rbind,.)
+
+names(random_forest_all) <- test_all_site$SITE_ID_L
+names(random_forest_all_baseline_test) <- test_all_site$SITE_ID_L
+names(random_forest_all_followup_train) <- test_all_site$SITE_ID_L
+names(random_forest_all_followup_test) <-test_all_site$SITE_ID_L
+
+
+
+```
+
+```{r,eval=FALSE}
+
+saveRDS(random_forest_all_baseline_test, paste0(scriptfold,"stacking_gfactor_modelling/random_forest_data/random_forest_all_baseline_test.RDS"))
+
+saveRDS(random_forest_all_followup_test, paste0(scriptfold,"stacking_gfactor_modelling/random_forest_data/random_forest_all_followup_test.RDS"))
+```
+
+
+```{r}
+feature_names <- random_forest_all[[1]]%>% select(-all_of(subj_info))%>% names()
+new_names <- str_remove_all(feature_names,"data")
+new_names <- str_remove_all(new_names,"ROI\\_")
+
+replace_na_tibble <- function(data_input, na_replace,na_repace_name){
+  data_output <- data_input %>% mutate_all(~replace(., is.na(.), na_replace))
+  large_names <- paste0(new_names,na_repace_name)
+  output_names <- c(subj_info,large_names)
+  names(data_output) = output_names
+  return(data_output)
+}
+
+random_forest_site_large <- random_forest_all %>% map(.,~replace_na_tibble(data_input = ., na_replace = 1000,na_repace_name = "large"))
+
+random_forest_site_small <- random_forest_all %>% map(.,~replace_na_tibble(data_input = ., na_replace = -1000,na_repace_name = "small"))
+
+random_forest_site_large_baseline_test <- random_forest_all_baseline_test %>% map(.,~replace_na_tibble(data_input = ., na_replace = 1000,na_repace_name = "large"))
+
+random_forest_site_small_baseline_test <- random_forest_all_baseline_test %>% map(.,~replace_na_tibble(data_input = ., na_replace = -1000,na_repace_name = "small"))
+
+random_forest_site_large_followup_train <- random_forest_all_followup_train %>% map(.,~replace_na_tibble(data_input = ., na_replace = 1000,na_repace_name = "large"))
+
+random_forest_site_small_followup_train <- random_forest_all_followup_train %>% map(.,~replace_na_tibble(data_input = ., na_replace = -1000,na_repace_name = "small"))
+
+random_forest_site_large_followup_test <- random_forest_all_followup_test %>% map(.,~replace_na_tibble(data_input = ., na_replace = 1000,na_repace_name = "large"))
+
+random_forest_site_small_followup_test <- random_forest_all_followup_test %>% map(.,~replace_na_tibble(data_input = ., na_replace = -1000,na_repace_name = "small"))
+
+random_forest_baseline_features <- map2(.x =random_forest_site_large ,.y = random_forest_site_small,~full_join(.x,.y, by = subj_info))
+
+random_forest_baseline_test_features <- map2(.x =random_forest_site_large_baseline_test ,
+                                             .y = random_forest_site_small_baseline_test,~full_join(.x,.y, by = subj_info))
+random_forest_followup_features <- map2(.x =random_forest_site_large_followup_train ,
+                                        .y = random_forest_site_small_followup_train,~full_join(.x,.y, by = subj_info))
+random_forest_followup_test_features <- map2(.x =random_forest_site_large_followup_test ,
+                                             .y = random_forest_site_small_followup_test,~full_join(.x,.y, by = subj_info))
+
+```
+
+join the features with the response gfactor
+```{r}
+
+gfactor_list <- readRDS(paste0(scriptfold,'genetics_psychopathology_common_scan_all_scripts/gfactor_scale_seperate', '.RData'))
+
+
+```
+
+```{r}
+
+gfactor_baseline_train <- map(gfactor_list,"output_train_baseline")
+gfactor_baseline_test <- map(gfactor_list,"output_test_baseline")
+gfactor_followup_train <- map(gfactor_list,"output_train_followup")
+gfactor_followup_test <- map(gfactor_list,"output_test_followup")
+
+```
+
+
+```{r}
+join_gfactor_site <- function(site_input,gfactor_data_input=gfactor_baseline_train,random_forest_data_input=random_forest_baseline_features){
+  gfactor_input <- gfactor_data_input[[site_input]]
+  random_forest_input <- random_forest_data_input[[site_input]]
+  data_output <- left_join(random_forest_input,gfactor_input,by = "SUBJECTKEY")
+  return(data_output)
+}
+
+random_forest_gfactor <- site_char %>% map(.,~join_gfactor_site(site_input = .))
+names(random_forest_gfactor) <- site_char
+
+random_forest_gfactor_baseline_test <- site_char %>% map(.,~join_gfactor_site(site_input = .,
+                                                                gfactor_data_input=gfactor_baseline_test,
+                                                                random_forest_data_input=random_forest_baseline_test_features))
+names(random_forest_gfactor_baseline_test) <- site_char
+
+random_forest_gfactor_followup_train <- site_char %>% map(.,~join_gfactor_site(site_input = .,
+                                                                gfactor_data_input=gfactor_followup_train,
+                                                                random_forest_data_input=random_forest_followup_features))
+names(random_forest_gfactor_followup_train) <- site_char
+
+random_forest_gfactor_followup_test <- site_char %>% map(.,~join_gfactor_site(site_input = .,
+                                                                gfactor_data_input=gfactor_followup_test,
+                                                                random_forest_data_input=random_forest_followup_test_features))
+names(random_forest_gfactor_followup_test) <- site_char
+
+```
+
+
+
+```{r,eval=FALSE}
+
+saveRDS(random_forest_gfactor, paste0(scriptfold,"stacking_gfactor_modelling/random_forest_data/random_forest_gfactor_train_baseline.RDS"))
+
+saveRDS(random_forest_gfactor_baseline_test, paste0(scriptfold,"stacking_gfactor_modelling/random_forest_data/random_forest_gfactor_baseline_test.RDS"))
+
+saveRDS(random_forest_gfactor_followup_train, paste0(scriptfold,"stacking_gfactor_modelling/random_forest_data/random_forest_gfactor_followup_train.RDS"))
+
+saveRDS(random_forest_gfactor_followup_test, paste0(scriptfold,"stacking_gfactor_modelling/random_forest_data/random_forest_gfactor_followup_test.RDS"))
+
+
+```
+
+
+```{r}
+
+random_forest_baseline <- list(train_list = random_forest_gfactor,
+                               test_list = random_forest_gfactor_baseline_test)
+
+
+random_forest_followup <- list(train_list = random_forest_gfactor_followup_train,
+                               test_list = random_forest_gfactor_followup_test)
+
+```
+
+
+```{r,eval=FALSE}
+
+saveRDS(random_forest_baseline, paste0(scriptfold,"stacking_gfactor_modelling/random_forest_data/random_forest_baseline.RDS"))
+
+saveRDS(random_forest_followup, paste0(scriptfold,"stacking_gfactor_modelling/random_forest_data/random_forest_followup.RDS"))
+```
