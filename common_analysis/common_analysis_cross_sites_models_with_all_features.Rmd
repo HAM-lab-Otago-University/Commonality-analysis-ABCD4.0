@@ -1,0 +1,2352 @@
+---
+title: "Commonality analysis for genes, mental health, social demographic lifestyle developmental and sets of brain features"
+author: "Yue Wang and Narun P"
+date:  "`r format(Sys.time(), '%d %b, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    number_sections: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r load_data, echo=FALSE}
+rm(list = ls(all.names = TRUE)) #will clear all objects includes hidden objects.
+gc() #free up memory and report the memory usage.
+```
+
+## Note
+Here we the ABCD release 4.0 data-set
+
+
+This file has all the linear mixed models with genes predictions as a variable. The reasons in doing this is that the number of observations in the genes data is substantially less than all the other variables. To be more specific: we have around 5,000 observations in genes data and 11,000 observations in mental health, social demographic lifestyle developmental and sets of brain features.
+
+# Setting up the environments
+
+## Loading libraries
+The following libraries and default settings were used during the analysis:
+
+
+```{r load_libraries}
+options(scipen = 999)
+#library("sva")
+library(tidyverse)
+library("tidymodels")
+##parallel map
+library(partR2)
+library(lme4)
+library(yhat)
+library(ggtext)
+library(ggpubr)
+library(cowplot)
+library(partR2)
+library(lme4)
+library(yhat)
+library("VennDiagram")
+## library to tidy up the linear mixed models
+library(sjPlot)
+
+theme_set(theme_bw() + theme(panel.grid = element_blank()))
+## parallel processing number of cores register
+all_cores <- parallel::detectCores(logical = FALSE) - 5
+
+doParallel::registerDoParallel(cores = all_cores)
+
+```
+
+## Setting up the path
+
+We first loaded all of the relevant data files (not shown here as they refer to local directories):
+
+```{r loading_data, echo=FALSE}
+# from Qnap data windows
+#datafolder = "//np-qnapa/Data/ABCD/ABCD4/ABCD4SQL/"
+#scriptfold = "//np-qnapa/Data/Yue script/"
+#NDAfold = "//np-qnapa/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#utilFold = "//np-qnapa/Data/ABCD/ABCD3/Analysis/utilFunc/"
+#studyNDAFold = "//np-qnapa/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#outputfolder = "//np-qnapa/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+
+### unbuntu directories
+
+#datafolder = "/media/Data/ABCD/ABCD4/ABCD4SQL/"
+#scriptfold = "/media/Data/Yue script/"
+#NDAfold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#utilFold = "/media/Data/ABCD/ABCD3/Analysis/utilFunc/"
+#studyNDAFold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+#outputfolder = "/media/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+#featurefolder = "/media/Data/ABCD/ABCD4/Analysis/ManipulatedData/"
+
+### mac directories
+datafolder = "/Volumes/Data/ABCD/ABCD4/ABCD4SQL/"
+scriptfold = "/Volumes/Data/Yue script/"
+NDAfold = "/Volumes/Data/ABCD/ABCD4/ABCDStudyNDA/"
+utilFold = "/Volumes/Data/ABCD/ABCD3/Analysis/utilFunc/"
+studyNDAFold = "/Volumes/Data/ABCD/ABCD4/ABCDStudyNDA/"
+outputfolder = "/Volumes/Data/ABCD/ABCD4/ABCD4_precessed_data/"
+featurefolder = "/Volumes/Data/ABCD/ABCD4/Analysis/ManipulatedData/"
+
+source(paste0(scriptfold,"stacking_gfactor_modelling/r_functions.R"))
+
+
+```
+
+# Data Preparation
+
+## load fitted gfactors from brain scan and psychopathology
+
+### load brain scan fitted results from stacking models
+
+```{r}
+rf_baseline <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_random_forest_results/random_forest_baseline_results.RDS"))
+
+rf_followup <- readRDS(paste0(scriptfold,"stacking_gfactor_modelling/collect_random_forest_results/random_forest_followup_results.RDS"))
+```
+
+
+
+
+### load the mental health predicted results
+
+```{r}
+psy_pred <- readRDS(paste0(scriptfold,"Common_psy_gene_brain_all/saved_outputs/psychopathology_pls_pred_2.0.RData"))
+
+```
+
+
+### load the social demographic lifestyle developmental predicted results
+
+
+```{r}
+ses_pred <- readRDS(paste0(scriptfold,"genetics_psychopathology_common_scan_all_scripts/ses_pls_pred.RData"))
+
+```
+
+### Load in genetics related to cognition predicted results 
+
+
+```{r}
+
+genetics_cog <- readRDS(paste0(scriptfold,'genetics_psychopathology_common_scan_all_scripts/psychopathology_cog_gene_pred_residual', '.RData'))
+```
+
+### load the computed gfactor
+
+```{r}
+
+gfactor_list <- readRDS(paste0(scriptfold,"genetics_psychopathology_common_scan_all_scripts/gfactor_scale_seperate.RData"))
+
+
+```
+
+
+## process loaded brain, genes, mental health and social demographic lifestyle developmental model predictions
+
+Be careful with what site you choose.
+
+```{r}
+
+rf_baseline_pred <- map(rf_baseline,"test_pred")
+rf_baseline_pred_tibble <- map(rf_baseline_pred,"model_predict")
+rf_baseline_table <- map(rf_baseline,"test_data")
+
+rf_followup_pred <- map(rf_followup,"test_pred")
+rf_followup_pred_tibble <- map(rf_followup_pred,"model_predict")
+rf_followup_table <- map(rf_followup,"test_data")
+
+```
+
+
+```{r}
+
+gfactor_baselie_test <- map(gfactor_list,"output_test_baseline")
+gfactor_followup_test <- map(gfactor_list,"output_test_followup")
+
+
+```
+
+```{r}
+subj_info <- c("SUBJECTKEY","SITE_ID_L","EVENTNAME")
+
+```
+
+Functions to process the loaded prediction results.
+
+```{r}
+pred_processing <- function(baseline_pred, followup_pred, baseline_table, followup_table,pred_name){
+  names_vec <- c(subj_info,pred_name)
+  
+  baseline_subj_info <- baseline_table %>% select(all_of(subj_info))
+  baseline_pred_vec <- baseline_pred %>% select(model_predict)
+  baseline_output <- bind_cols(baseline_subj_info,baseline_pred_vec)
+  names(baseline_output) <- names_vec
+  
+  followup_subj_info <- followup_table %>% select(all_of(subj_info))
+  followup_pred_vec <- followup_pred %>% select(model_predict)
+  followup_output <- bind_cols(followup_subj_info,followup_pred_vec)
+  names(followup_output) <- names_vec
+
+  output_all <- bind_rows(baseline_output,followup_output)
+  return(list(baseline_output = baseline_output,
+              followup_output = followup_output))
+}
+
+
+
+
+```
+
+Combine all the subject information and prediction together and change the names.
+
+
+```{r}
+processed_rf_results <- pmap(list(rf_baseline_pred_tibble,rf_baseline_table,
+                                  rf_followup_pred_tibble,rf_followup_table),
+                             ~pred_processing(baseline_pred=..1,
+                                              followup_pred=..3, 
+                                              baseline_table=..2, 
+                                              followup_table=..4,
+                                              pred_name="random_forest_stacking"))
+
+
+processed_psy_results <- pmap(list(psy_pred[["baseline_test_pred"]],
+                                   psy_pred[["baseline_test_data"]],
+                                  psy_pred[["followup_test_pred"]],
+                                  psy_pred[["followup_test_data"]]),
+                             ~pred_processing(baseline_pred=..1,
+                                              followup_pred=..3, 
+                                              baseline_table=..2, 
+                                              followup_table=..4,
+                                              pred_name="psychopathology_pls"))
+
+
+processed_ses_results <- pmap(list(ses_pred[["baseline_test_pred"]],
+                                   ses_pred[["baseline_test_data"]],
+                                  ses_pred[["followup_test_pred"]],
+                                  ses_pred[["followup_test_data"]]),
+                             ~pred_processing(baseline_pred=..1,
+                                              followup_pred=..3, 
+                                              baseline_table=..2, 
+                                              followup_table=..4,
+                                              pred_name="ses_pls"))
+```
+
+
+```{r}
+
+site_char <- names(processed_psy_results)
+
+```
+
+### prepocessing genetics prediction results
+
+load in family index data
+
+
+```{r, cache = FALSE, warning=FALSE}
+ACS <-read_csv(paste0(datafolder,"ACSPSW03_DATA_TABLE.csv")) 
+#knitr::kable(glimpse(ACS))
+
+#race_ethnicity
+#1 = White; 2 = Black; 3 = Hispanic; 4 = Asian; 5 = Other
+
+# guardian-report relationship
+# Relationship of the participant in his or her family
+# 0 = single; 1 = sibling; 2 = twin; 3 = triplet
+# ACS %>% count(REL_RELATIONSHIP)
+
+ACSselected <- ACS %>% 
+  select(SUBJECTKEY, EVENTNAME, SEX, INTERVIEW_AGE, RACE_ETHNICITY, 
+                              REL_FAMILY_ID, ACS_RAKED_PROPENSITY_SCORE) %>%
+  mutate(RACE_ETHNICITY = recode_factor(as.factor(RACE_ETHNICITY),
+                `1` = "White", `2` = "Black", `3` = "Hispanic", `4` = "Asian", `5` = "Other",
+                .default = "White")) %>%
+  mutate(SEX = as.factor(SEX)) %>%
+  mutate(REL_FAMILY_ID = as.factor(REL_FAMILY_ID))
+
+ACSselected %>%
+ filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+ skimr::skim()
+ACSselected_baseline <- ACSselected %>%
+                        filter(EVENTNAME =="baseline_year_1_arm_1")%>%
+                        select(SUBJECTKEY,REL_FAMILY_ID)
+
+ACSselected_followup <- ACSselected %>%
+                        filter(EVENTNAME =="1_year_follow_up_y_arm_1")%>%
+                        select(SUBJECTKEY,REL_FAMILY_ID)
+```
+
+
+Process the genes data.
+
+```{r}
+genetics_cog_baseline_pred <-genetics_cog[["baseline_test_pred"]]
+genetics_cog_baseline_table <-genetics_cog[["baseline_test_data"]]
+
+genetics_cog_followup_pred <- genetics_cog[["followup_test_pred"]]
+genetics_cog_followup_data <- genetics_cog[["followup_test_data"]]
+
+
+pred_processing_gene <- function(baseline_pred, followup_pred, baseline_table, followup_table,pred_name){
+  names_vec <- c(c("SUBJECTKEY","SITE_ID_L"),pred_name)
+  
+  baseline_subj_info <- baseline_table %>% select(all_of(c("SUBJECTKEY","SITE_ID_L")))
+  baseline_pred_vec <- baseline_pred %>% select(model_predict)
+  baseline_output <- bind_cols(baseline_subj_info,baseline_pred_vec)
+  names(baseline_output) <- names_vec
+  
+  followup_subj_info <- followup_table %>% select(all_of(c("SUBJECTKEY","SITE_ID_L")))
+  followup_pred_vec <- followup_pred %>% select(model_predict)
+  followup_output <- bind_cols(followup_subj_info,followup_pred_vec)
+  names(followup_output) <- names_vec
+
+  output_all <- bind_rows(baseline_output,followup_output)
+  return(list(baseline_output = baseline_output,
+              followup_output = followup_output))
+}
+
+processed_gene_results <- pmap(list(genetics_cog_baseline_pred,genetics_cog_baseline_table,
+                                  genetics_cog_followup_pred,genetics_cog_followup_data),
+                             ~pred_processing_gene(baseline_pred=..1,
+                                              followup_pred=..3, 
+                                              baseline_table=..2, 
+                                              followup_table=..4,
+                                              pred_name="gene_cog"))
+
+
+```
+
+count the total number in the genetics
+
+```{r}
+
+genetics_cog_baseline_tibble <- map(genetics_cog_baseline_table,~dim(.))%>%
+  do.call(rbind,.)
+
+sum(genetics_cog_baseline_tibble[,1])
+
+### checking unique IDs
+
+genetics_cog_baseline_ID <- map(genetics_cog_baseline_table,~unique(.[["SUBJECTKEY"]])%>%length())%>%
+                            do.call(rbind,.)
+sum(genetics_cog_baseline_ID)
+
+```
+
+Join the brain, genes, mental health and social demographic lifestyle developmental model predictions
+
+
+```{r}
+
+join_data_all <- function(site_input){
+  ### join the data and drop NA
+  rf_baseline_tibble <- processed_rf_results[[site_input]][["baseline_output"]]
+  rf_followup_tibble <- processed_rf_results[[site_input]][["followup_output"]]
+  psy_baseline_tibble <- processed_psy_results[[site_input]][["baseline_output"]]
+  psy_followup_tibble <- processed_psy_results[[site_input]][["followup_output"]]
+  ses_baseline_tibble <- processed_ses_results[[site_input]][["baseline_output"]]
+  ses_followup_tibble <- processed_ses_results[[site_input]][["followup_output"]]
+  
+
+  baseline_rf_psy_ses <- plyr::join_all(list(rf_baseline_tibble,
+                                      psy_baseline_tibble,
+                                      ses_baseline_tibble), 
+                                 by =subj_info, type = 'full')
+  followup_rf_psy_ses <- plyr::join_all(list(rf_followup_tibble,
+                                      psy_followup_tibble,
+                                      ses_followup_tibble), 
+                                 by =subj_info, type = 'full')
+  
+
+
+   gene_baseline_tibble <-processed_gene_results[[site_input]][["baseline_output"]]
+  gene_followup_tibble <- processed_gene_results[[site_input]][["followup_output"]]
+  
+  
+   baseline_rf_psy_ses_gene <- full_join(baseline_rf_psy_ses,
+                                      gene_baseline_tibble, 
+                                 by =c("SUBJECTKEY","SITE_ID_L" ))
+  followup_rf_psy_ses_gene <- full_join(followup_rf_psy_ses,
+                                      gene_followup_tibble, 
+                                 by =c("SUBJECTKEY","SITE_ID_L" ))
+  
+
+  gfactor_baseline <- gfactor_baselie_test[[site_input]]
+  gfactor_followup <- gfactor_followup_test[[site_input]]
+  
+  baseline_all <- plyr::join_all(list(baseline_rf_psy_ses_gene,
+                                      ACSselected_baseline,gfactor_baseline), 
+                                 by ="SUBJECTKEY", type = 'full')%>%
+                                 drop_na()
+  followup_all <- plyr::join_all(list(followup_rf_psy_ses_gene,
+                                      ACSselected_baseline,gfactor_followup), 
+                                 by ="SUBJECTKEY", type = 'full')%>%
+                                 drop_na()
+
+ output_all <- bind_rows(baseline_all,followup_all)
+  
+  return(list(baseline = baseline_all,
+              followup=followup_all,
+              all = output_all))
+  
+}
+
+
+```
+
+
+```{r}
+
+gfactor_all <- map(.x = site_char,~join_data_all(site_input = .x))
+
+names(gfactor_all) <- site_char
+
+gfactor_all_baseline <- map(gfactor_all,"baseline")
+gfactor_all_followup <- map(gfactor_all,"followup")
+gfactor_all_baseline_followup <- map(gfactor_all,"all")
+
+```
+
+
+
+## Mean centering within family and within site
+
+
+This script only perform the commonality analyses for the models with genetics. In genetics there are only around 5000 participants, which is much smaller than all the other models. 
+
+Some explanation of the variables:
+
+brain_savg: the average of brain prediction results within each site.
+
+brain_cws: brain predictions centered within each site.
+
+mental_savg: the average of mental health predictions results within each site.
+
+mental_cws: mental health predictions centered within each site.
+
+sdl_savg: the average of social demographic lifestyle predictions results within each site.
+
+sdl_cws: social demographic lifestyle predictions centered within each site.
+
+gene_favg: the average of gene predictions results within each family.
+
+gene_cwf: gene predictions centered within each family (basically zeros as the data is comprised of single child in those families).
+
+ gene_savg_favg: averaged gene_favg estimates across each site
+
+ gene_cws_cwf: gene_favg estimates centered within each site.
+ 
+ 
+ 
+```{r}
+
+center_by_family_site <- function(data_input){
+  
+ data_input <- data_input[order(data_input$REL_FAMILY_ID),]
+ count_by_family <- data_input %>% count(REL_FAMILY_ID)
+
+ 
+ mean_by_family_gene <- data_input %>% group_by(REL_FAMILY_ID)%>%
+                                 summarise_at(vars(gene_cog),mean)
+ 
+ mean_vec_gene <- rep(mean_by_family_gene$gene_cog,times = count_by_family$n)
+ 
+ data_gene  <- data_input%>%
+                 mutate(gene_favg = mean_vec_gene,
+                        gene_cwf = gene_cog - gene_favg)
+ 
+ 
+ output_data <- data_gene %>% 
+    mutate(brain_savg = mean(random_forest_stacking))%>% 
+    mutate(brain_cws = random_forest_stacking-brain_savg)%>% 
+   mutate(mental_savg = mean(psychopathology_pls))%>%
+    mutate(mental_cws = psychopathology_pls - mental_savg)%>% 
+    mutate(gene_savg_favg = mean(gene_favg))%>%
+    mutate(gene_cws_cwf = gene_cwf - gene_savg_favg)%>% 
+   mutate(sdl_savg = mean(ses_pls))%>%
+    mutate(sdl_cws = ses_pls - sdl_savg)
+
+return(output_data)
+  }
+
+
+centered_all_baseline <- map(gfactor_all_baseline,~center_by_family_site(data_input = .))
+centered_all_followup <- map(gfactor_all_followup,~center_by_family_site(data_input = .))
+
+```
+
+## Scale the overall data by each variable
+
+```{r}
+gfactor_all_pred_centered_site_baseline <- centered_all_baseline%>%
+                                           do.call(rbind,.)
+gfactor_all_pred_centered_site_followup <- centered_all_followup%>%
+                                           do.call(rbind,.)
+
+
+features_not_scale <- c(subj_info, "REL_FAMILY_ID","gfactor")
+
+features_scale <- gfactor_all_pred_centered_site_baseline %>% select(-all_of(features_not_scale))%>% colnames()
+## recipe to scale the features
+recipe_scale <- function(train_input=gfactor_all_pred_centered_site_baseline){
+  norm_recipe <- recipe( as.formula("gfactor~."), data = train_input) %>%
+    update_role(all_of(features_scale), new_role = "predictor")%>%
+    update_role("gfactor", new_role = "outcome" )%>%
+    # normalize numeric predictors and outcome
+    step_normalize(all_numeric_predictors())
+  return(norm_recipe)
+}
+
+
+all_baseline_recipe <- 
+
+data_all_baseline <-recipe_scale(train_input=gfactor_all_pred_centered_site_baseline) %>%
+                    prep() %>%
+                    juice()
+
+
+data_all_followup <-recipe_scale(train_input=gfactor_all_pred_centered_site_followup) %>%
+                    prep() %>%
+                    juice()
+
+
+
+```
+
+
+# commonality analysis between stacked brain scan, psychopathology and genetics that predicts cognition
+
+
+Commonality analysis with the linear mixed models
+
+Commonality between three features within a 4 level nested structure
+
+Measurements are nested within subjects
+
+Subjects are nested within families
+
+Families are nested within sites
+
+Due to the age requirements of all the subjects. Participants within the family are likely to be twins.
+
+Because the data structure (number of subjects) and the modelling methods (through grid search) are so different between baseline and followup. The analysis is done separately between them.
+
+
+Note: this model is not included in the finally manuscript.
+
+## Function to compute the commonality coefficients
+
+```{r}
+common_analysis_gene_psy_brain_multi_both <- function(data_input=gfactor_all_pred_centered_site_all){
+print("full_model")  
+  full_model <- lmer(gfactor ~ brain_savg+ brain_cws+ mental_savg+mental_cws+gene_savg_favg+gene_cws_cwf+ (1|SITE_ID_L:REL_FAMILY_ID),data = data_input)
+# runs very slow with this multilevel model
+ # rsq_full_model <- MuMIn::r.squaredGLMM(full_model)
+rsq_full_model <- performance::r2(full_model)
+  
+    print("brain_psy_model") 
+  brain_psy_model <- lmer(gfactor ~ brain_savg+ brain_cws+ mental_cws+mental_savg+ (1|SITE_ID_L:REL_FAMILY_ID),data = data_input)
+  rsq_brain_psy <- performance::r2(brain_psy_model)
+ 
+
+  print("gene_psy_model")
+  ## this model has singularity problem
+  gene_psy_model <- lmer(gfactor ~mental_cws+mental_savg+gene_savg_favg+gene_cws_cwf+ (1|SITE_ID_L:REL_FAMILY_ID),data = data_input)
+  rsq_gene_psy <- performance::r2(gene_psy_model)
+
+
+   print("brain_gene_model") 
+  brain_gene_model <- lmer(gfactor ~ brain_savg+ brain_cws+gene_savg_favg+gene_cws_cwf+ (1|SITE_ID_L:REL_FAMILY_ID),data = data_input)
+  rsq_brain_gene <- performance::r2(brain_gene_model)
+
+
+  print("brain_model")
+  brain_model <- lmer(gfactor ~ brain_savg+ brain_cws+ (1|SITE_ID_L:REL_FAMILY_ID),data = data_input)
+  rsq_brain <- performance::r2(brain_model)
+
+
+  print("psy_model")
+  psy_model <- lmer(gfactor ~  mental_cws+mental_savg+ (1|SITE_ID_L:REL_FAMILY_ID),data = data_input)
+  rsq_psy <- performance::r2(psy_model)
+
+
+    print("gene_model")
+  gene_model <- lmer(gfactor ~ gene_savg_favg+gene_cws_cwf+ (1|SITE_ID_L:REL_FAMILY_ID),data = data_input)
+  rsp_gene <- performance::r2(gene_model)
+
+  
+  unique_gene_margin <- rsq_full_model$R2_marginal-rsq_brain_psy$R2_marginal
+    
+  unique_brain_margin <- rsq_full_model$R2_marginal-rsq_gene_psy$R2_marginal
+  
+  unique_psy_margin <- rsq_full_model$R2_marginal-rsq_brain_gene$R2_marginal
+    
+  common_brain_psy_margin <- rsq_brain_gene$R2_marginal+rsq_gene_psy$R2_marginal-rsp_gene$R2_marginal-rsq_full_model$R2_marginal
+  
+  common_gene_psy_margin <- rsq_brain_gene$R2_marginal+rsq_brain_psy$R2_marginal-rsq_brain$R2_marginal-rsq_full_model$R2_marginal
+  
+  common_brain_gene_margin <- rsq_brain_psy$R2_marginal+rsq_gene_psy$R2_marginal-rsq_psy$R2_marginal-rsq_full_model$R2_marginal
+  
+  common_brain_gene_psy_margin <-rsp_gene$R2_marginal+rsq_brain$R2_marginal+rsq_psy$R2_marginal-rsq_brain_gene$R2_marginal-rsq_gene_psy$R2_marginal-rsq_brain_psy$R2_marginal+rsq_full_model$R2_marginal
+  
+  
+  
+  unique_gene_conditional <- rsq_full_model$R2_conditional-rsq_brain_psy$R2_conditional
+    
+  unique_brain_conditional <- rsq_full_model$R2_conditional-rsq_gene_psy$R2_conditional
+  
+  unique_psy_conditional <- rsq_full_model$R2_conditional-rsq_brain_gene$R2_conditional
+    
+  common_brain_psy_conditional <- rsq_brain_gene$R2_conditional+rsq_gene_psy$R2_conditional-rsp_gene$R2_conditional-rsq_full_model$R2_conditional
+  
+  common_gene_psy_conditional <- rsq_brain_gene$R2_conditional+rsq_brain_psy$R2_conditional-rsq_brain$R2_conditional-rsq_full_model$R2_conditional
+  
+  common_brain_gene_conditional <- rsq_brain_psy$R2_conditional+rsq_gene_psy$R2_conditional-rsq_psy$R2_conditional-rsq_full_model$R2_conditional
+  
+  common_brain_gene_psy_conditional <-rsp_gene$R2_conditional+rsq_brain$R2_conditional+rsq_psy$R2_conditional-rsq_brain_gene$R2_conditional-rsq_gene_psy$R2_conditional-rsq_brain_psy$R2_conditional+rsq_full_model$R2_conditional
+  
+  
+  output_common_tibble <- tibble(variable_effects = c("unique_gene",
+                                               "unique_brain",
+                                              "unique_psy",
+                                              "common_brain_psy",
+                                              "common_gene_psy",
+                                              "common_brain_gene",
+                                              "common_brain_gene_psy"),
+                          marginal_rsq = c(unique_gene_margin,
+                                              unique_brain_margin,
+                                              unique_psy_margin,
+                                              common_brain_psy_margin,
+                                              common_gene_psy_margin,
+                                              common_brain_gene_margin,
+                                              common_brain_gene_psy_margin),
+                          conditional_rsq = c(unique_gene_conditional,
+                                              unique_brain_conditional,
+                                              unique_psy_conditional,
+                                              common_brain_psy_conditional,
+                                              common_gene_psy_conditional,
+                                              common_brain_gene_conditional,
+                                              common_brain_gene_psy_conditional))
+  output_rsq_tibble <- tibble(model_names<- c("gene",
+                                               "brain",
+                                              "psy",
+                                              "brain_psy",
+                                              "gene_psy",
+                                              "brain_gene",
+                                              "brain_gene_psy"),
+                          marginal_rsq = c(rsp_gene$R2_marginal,
+                                              rsq_brain$R2_marginal,
+                                              rsq_psy$R2_marginal,
+                                              rsq_brain_psy$R2_marginal,
+                                              rsq_gene_psy$R2_marginal,
+                                              rsq_brain_gene$R2_marginal,
+                                              rsq_full_model$R2_marginal),
+                          conditional_rsq = c(rsp_gene$R2_conditional,
+                                              rsq_brain$R2_conditional,
+                                              rsq_psy$R2_conditional,
+                                              rsq_brain_psy$R2_conditional,
+                                              rsq_gene_psy$R2_conditional,
+                                              rsq_brain_gene$R2_conditional,
+                                              rsq_full_model$R2_conditional))
+  
+  return(list(output_common_tibble=output_common_tibble,
+              output_rsq_tibble=output_rsq_tibble,
+              full_model=full_model,
+              brain_psy_model=brain_psy_model,
+              gene_psy_model=gene_psy_model,
+              brain_gene_model=brain_gene_model,
+             brain_model=brain_model,
+             psy_model=psy_model,
+             gene_model=gene_model
+             ))
+  }
+
+
+```
+
+
+## Process the table results 
+
+
+```{r}
+common_analysis_gene_psy_brain_all_site_both <-common_analysis_gene_psy_brain_multi_both(data_input=data_all_baseline)
+
+
+
+
+common_analysis_gene_psy_brain_all_site_both_followup <-common_analysis_gene_psy_brain_multi_both(data_input=data_all_followup)
+
+
+
+```
+
+
+```{r}
+baseline_plot_vec <- common_analysis_gene_psy_brain_all_site_both[[1]]$marginal_rsq
+#baseline_plot_vec_corrected <- baseline_plot_vec-baseline_plot_vec[5]/6 
+#### get rid of the negative values
+#baseline_plot_vec_corrected[5] <- 0
+
+
+baseline_plot_vec_percent <- baseline_plot_vec/sum(baseline_plot_vec)*100 
+baseline_plot_vec_percent <- round(baseline_plot_vec_percent,2)
+print(baseline_plot_vec_percent)
+
+baseline_plot_vec_raw <- baseline_plot_vec*100 
+baseline_plot_vec_raw <- round(baseline_plot_vec_raw,2)
+print(baseline_plot_vec_raw)
+
+
+followup_plot_vec <- common_analysis_gene_psy_brain_all_site_both_followup[[1]]$marginal_rsq
+#baseline_plot_vec_corrected_followup <- baseline_plot_vec_followup-baseline_plot_vec_followup[5]/6
+#### get rid of the negative values
+#baseline_plot_vec_corrected_followup[5] <- 0
+
+
+followup_plot_vec_percentage <- followup_plot_vec/sum(followup_plot_vec)*100
+followup_plot_vec_percentage <- round(followup_plot_vec_percentage,2)
+print(followup_plot_vec_percentage)
+
+followup_plot_vec_raw <- followup_plot_vec*100 
+followup_plot_vec_raw <- round(followup_plot_vec_raw,2)
+print(followup_plot_vec_raw)
+
+baseline_gene_psy_brain_table <- common_analysis_gene_psy_brain_all_site_both[[1]]%>%
+                                 mutate(corrected_percent = baseline_plot_vec_percent)%>%
+                                 mutate(corrected_raw = baseline_plot_vec_raw)
+
+
+
+
+baseline_gene_psy_brain_table%>% 
+    kableExtra::kbl(caption = "Commonality analysis in baseline") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+common_analysis_gene_psy_brain_all_site_both[[2]]%>% 
+    kableExtra::kbl(caption = "R^2 metrics for all models in baseline") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+
+
+followup_gene_psy_brain_table <- common_analysis_gene_psy_brain_all_site_both_followup[[1]]%>%
+                                 mutate(corrected_percent = followup_plot_vec)%>%
+                                 mutate(corrected_raw = followup_plot_vec_raw)
+
+
+followup_gene_psy_brain_table%>% 
+    kableExtra::kbl(caption = "Commonality analysis in followup") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+common_analysis_gene_psy_brain_all_site_both_followup[[2]]%>% 
+    kableExtra::kbl(caption = "R^2 metrics for all models in followup") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+```
+## Plot the venn diagram
+
+ baseline percentage of rsquare plot
+
+```{r}
+overrideTriple=TRUE
+
+venn_plot_baseline_percent <- draw.triple.venn(area1 = baseline_plot_vec_percent[2]+baseline_plot_vec_percent[6]+baseline_plot_vec_percent[4]+baseline_plot_vec_percent[7],
+  area2 = baseline_plot_vec_percent[3]+baseline_plot_vec_percent[4]+baseline_plot_vec_percent[5]+baseline_plot_vec_percent[7],
+  area3 = baseline_plot_vec_percent[1]+baseline_plot_vec_percent[5]+baseline_plot_vec_percent[6]+baseline_plot_vec_percent[7],
+  n12 = baseline_plot_vec_percent[4]+baseline_plot_vec_percent[7],
+  n13 = baseline_plot_vec_percent[6]+baseline_plot_vec_percent[7],
+  n23 = baseline_plot_vec_percent[5]+baseline_plot_vec_percent[7],
+  n123 = baseline_plot_vec_percent[7],
+  category = c("Brain", "Mental Health", "Genes"),
+  fill = c("#009E73", "#D55E00", "#CC79A7"),
+  lty = "dashed",
+  cat.col = c("#009E73", "#D55E00", "#CC79A7"),
+  filename = NULL,
+  cex = 0.001, ## label font size
+  cat.cex = 2,### caption font size
+  lwd = 2,
+  cat.fontface = "bold",
+  cat.dist = c(0.1, 0.1,-0.2), # Modified
+  cat.pos = c(5,10,10),# Modified
+  print.mode="percent",
+  euler.d=F,
+  scaled=F,
+  reverse = F)
+
+grid.newpage()
+
+#grid::grid.draw(venn_plot_baseline_percent)
+#invisible(dev.off())
+```
+
+Without any labels
+
+```{r}
+overrideTriple=TRUE
+
+venn_plot_baseline_percent <- draw.triple.venn(area1 = baseline_plot_vec_percent[2]+baseline_plot_vec_percent[6]+baseline_plot_vec_percent[4]+baseline_plot_vec_percent[7],
+  area2 = baseline_plot_vec_percent[3]+baseline_plot_vec_percent[4]+baseline_plot_vec_percent[5]+baseline_plot_vec_percent[7],
+  area3 = baseline_plot_vec_percent[1]+baseline_plot_vec_percent[5]+baseline_plot_vec_percent[6]+baseline_plot_vec_percent[7],
+  n12 = baseline_plot_vec_percent[4]+baseline_plot_vec_percent[7],
+  n13 = baseline_plot_vec_percent[6]+baseline_plot_vec_percent[7],
+  n23 = baseline_plot_vec_percent[5]+baseline_plot_vec_percent[7],
+  n123 = baseline_plot_vec_percent[7],
+#  category = c("Brain", "Mental Health", "Genes"),
+  fill = c("#009E73", "#D55E00", "#CC79A7"),
+  lty = "dashed",
+  cat.col = c("#009E73", "#D55E00", "#CC79A7"),
+  filename = NULL,
+  cex = 0.001, ## label font size
+  cat.cex = 2,### caption font size
+  lwd = 2,
+  cat.fontface = "bold",
+  cat.dist = c(0.1, 0.1,-0.1), # Modified
+  cat.pos = c(5,10,-10),# Modified
+  print.mode="percent",
+  euler.d=F,
+  scaled=F,
+  reverse = F)
+
+grid.newpage()
+
+#grid::grid.draw(venn_plot_baseline_percent)
+#invisible(dev.off())
+```
+
+
+
+
+```{r}
+#overrideTriple=TRUE
+
+venn_plot_baseline_percent <- draw.triple.venn(area1 = baseline_plot_vec_percent[2]+baseline_plot_vec_percent[6]+baseline_plot_vec_percent[4]+baseline_plot_vec_percent[7],
+  area2 = baseline_plot_vec_percent[3]+baseline_plot_vec_percent[4]+baseline_plot_vec_percent[5]+baseline_plot_vec_percent[7],
+  area3 = baseline_plot_vec_percent[1]+baseline_plot_vec_percent[5]+baseline_plot_vec_percent[6]+baseline_plot_vec_percent[7],
+  n12 = baseline_plot_vec_percent[4]+baseline_plot_vec_percent[7],
+  n13 = baseline_plot_vec_percent[6]+baseline_plot_vec_percent[7],
+  n23 = baseline_plot_vec_percent[5]+baseline_plot_vec_percent[7],
+  n123 = baseline_plot_vec_percent[7],
+  category = c("Brain", "Mental Health", "Genes"),
+  fill = c("#009E73", "#D55E00", "#CC79A7"),
+  lty = "dashed",
+  cat.col = c("black", "black", "black"),
+    filename = NULL,
+  cex = 2, ## label font size
+  cat.cex = 2,### caption font size
+  lwd = 2,
+  cat.fontface = "bold",
+  cat.dist = c(-0.1, -0.1,-0.1), # Modified
+  #cat.pos = c(-30, 150,100),# Modified
+  print.mode="percent"
+  )
+
+
+grid.newpage()
+
+#grid::grid.draw(venn_plot_baseline_percent)
+#invisible(dev.off())
+```
+### baseline rsquare score plot
+
+```{r}
+venn_plot_baseline_raw <- draw.triple.venn(area1 = baseline_plot_vec_raw[2]+baseline_plot_vec_raw[6]+baseline_plot_vec_raw[4]+baseline_plot_vec_raw[7],
+  area2 = baseline_plot_vec_raw[3]+baseline_plot_vec_raw[4]+baseline_plot_vec_raw[5]+baseline_plot_vec_raw[7],
+  area3 = baseline_plot_vec_raw[1]+baseline_plot_vec_raw[5]+baseline_plot_vec_raw[6]+baseline_plot_vec_raw[7],
+  n12 = baseline_plot_vec_raw[4]+baseline_plot_vec_raw[7],
+  n13 = baseline_plot_vec_raw[6]+baseline_plot_vec_raw[7],
+  n23 = baseline_plot_vec_raw[5]+baseline_plot_vec_raw[7],
+  n123 = baseline_plot_vec_raw[7],
+  category = c("Brain", "Mental Health", "Genes"),
+  fill = c("#009E73", "#D55E00", "#CC79A7"),
+  lty = "dashed",
+  cat.col = c("black", "black", "black"),
+  filename = NULL,
+  cex = 2, ## label font size
+  cat.cex = 2,### caption font size
+  lwd = 2,
+  cat.fontface = "bold",
+  cat.dist = c(-0.1, -0.1,-0.1), # Modified
+  #cat.pos = c(-30, 150,100),# Modified
+  #print.mode="percent"
+  )
+
+grid.newpage()
+
+#grid::grid.draw(venn_plot_baseline_raw)
+#invisible(dev.off())
+```
+
+## venn diagram for followup
+
+
+```{r}
+venn_plot_followup_percent <- draw.triple.venn(area1 = followup_plot_vec_percentage[2]+followup_plot_vec_percentage[6]+followup_plot_vec_percentage[4]+followup_plot_vec_percentage[7],
+  area2 = followup_plot_vec_percentage[3]+followup_plot_vec_percentage[4]+followup_plot_vec_percentage[5]+followup_plot_vec_percentage[7],
+  area3 = followup_plot_vec_percentage[1]+followup_plot_vec_percentage[5]+followup_plot_vec_percentage[6]+followup_plot_vec_percentage[7],
+  n12 = followup_plot_vec_percentage[4]+followup_plot_vec_percentage[7],
+  n13 = followup_plot_vec_percentage[6]+followup_plot_vec_percentage[7],
+  n23 = followup_plot_vec_percentage[5]+followup_plot_vec_percentage[7],
+  n123 = followup_plot_vec_percentage[7],
+  category = c("Brain", "Mental Health", "Genes"),
+  fill = c("#009E73", "#D55E00", "#CC79A7"),
+  lty = "dashed",
+  cat.col = c("black", "black", "black"),##change the caption color
+  filename = NULL,
+  cex = 2, ## label font size
+  cat.cex = 2,### caption font size
+  lwd = 2,
+  cat.fontface = "bold",
+  cat.dist = c(-0.1, -0.1,-0.1), # Modified
+  #cat.pos = c(-30, 150,100),# Modified
+  print.mode="percent")
+
+grid.newpage()
+
+#grid::grid.draw(venn_plot_followup_percent)
+#invisible(dev.off())
+
+```
+
+```{r}
+overrideTriple=TRUE
+
+venn_plot_baseline_percent <- draw.triple.venn(area1 = followup_plot_vec_percentage[2]+followup_plot_vec_percentage[6]+followup_plot_vec_percentage[4]+followup_plot_vec_percentage[7],
+  area2 = followup_plot_vec_percentage[3]+followup_plot_vec_percentage[4]+followup_plot_vec_percentage[5]+followup_plot_vec_percentage[7],
+  area3 = followup_plot_vec_percentage[1]+followup_plot_vec_percentage[5]+followup_plot_vec_percentage[6]+followup_plot_vec_percentage[7],
+  n12 = followup_plot_vec_percentage[4]+followup_plot_vec_percentage[7],
+  n13 = followup_plot_vec_percentage[6]+followup_plot_vec_percentage[7],
+  n23 = followup_plot_vec_percentage[5]+followup_plot_vec_percentage[7],
+  n123 = followup_plot_vec_percentage[7],
+  category = c("Brain", "Mental Health", "Genes"),
+  fill = c("#009E73", "#D55E00", "#CC79A7"),
+  lty = "dashed",
+  cat.col = c("#009E73", "#D55E00", "#CC79A7"),
+  filename = NULL,
+  cex = 0.001, ## label font size
+  cat.cex = 2,### caption font size
+  lwd = 2,
+  cat.fontface = "bold",
+  cat.dist = c(0.1, 0.1,-0.15), # Modified
+  cat.pos = c(5,10,-10),# Modified
+  print.mode="percent",
+  euler.d=F,
+  scaled=F,
+  reverse = F)
+
+grid.newpage()
+
+#grid::grid.draw(venn_plot_baseline_percent)
+#invisible(dev.off())
+```
+ Plot without label
+ 
+```{r}
+overrideTriple=TRUE
+
+venn_plot_baseline_percent <- draw.triple.venn(area1 = followup_plot_vec_percentage[2]+followup_plot_vec_percentage[6]+followup_plot_vec_percentage[4]+followup_plot_vec_percentage[7],
+  area2 = followup_plot_vec_percentage[3]+followup_plot_vec_percentage[4]+followup_plot_vec_percentage[5]+followup_plot_vec_percentage[7],
+  area3 = followup_plot_vec_percentage[1]+followup_plot_vec_percentage[5]+followup_plot_vec_percentage[6]+followup_plot_vec_percentage[7],
+  n12 = followup_plot_vec_percentage[4]+followup_plot_vec_percentage[7],
+  n13 = followup_plot_vec_percentage[6]+followup_plot_vec_percentage[7],
+  n23 = followup_plot_vec_percentage[5]+followup_plot_vec_percentage[7],
+  n123 = followup_plot_vec_percentage[7],
+#  category = c("Brain", "Mental Health", "Genes"),
+  fill = c("#009E73", "#D55E00", "#CC79A7"),
+  lty = "dashed",
+  cat.col = c("#009E73", "#D55E00", "#CC79A7"),
+  filename = NULL,
+  cex = 0.001, ## label font size
+  cat.cex = 2,### caption font size
+  lwd = 2,
+  cat.fontface = "bold",
+  cat.dist = c(0.1, 0.1,-0.1), # Modified
+  cat.pos = c(5,10,-10),# Modified
+  print.mode="percent",
+  euler.d=F,
+  scaled=F,
+  reverse = F)
+
+grid.newpage()
+
+#grid::grid.draw(venn_plot_baseline_percent)
+#invisible(dev.off())
+```
+
+```{r}
+venn_plot_followup_raw <- draw.triple.venn(area1 = followup_plot_vec_raw[2]+followup_plot_vec_raw[6]+followup_plot_vec_raw[4]+followup_plot_vec_raw[7],
+  area2 = followup_plot_vec_raw[3]+followup_plot_vec_raw[4]+followup_plot_vec_raw[5]+followup_plot_vec_raw[7],
+  area3 = followup_plot_vec_raw[1]+followup_plot_vec_raw[5]+followup_plot_vec_raw[6]+followup_plot_vec_raw[7],
+  n12 = followup_plot_vec_raw[4]+followup_plot_vec_raw[7],
+  n13 = followup_plot_vec_raw[6]+followup_plot_vec_raw[7],
+  n23 = followup_plot_vec_raw[5]+followup_plot_vec_raw[7],
+  n123 = followup_plot_vec_raw[7],
+  category = c("Brain", "Mental Health", "Genes"),
+  fill = c("#009E73", "#D55E00", "#CC79A7"),
+  lty = "dashed",
+  cat.col = c("black", "black", "black"),##change the caption color
+  filename = NULL,
+  cex = 2, ## label font size
+  cat.cex = 2,### caption font size
+  lwd = 2,
+  cat.fontface = "bold",
+  cat.dist = c(-0.1, -0.1,-0.1), # Modified
+  #cat.pos = c(-30, 150,100),# Modified
+  #print.mode="percent"
+  )
+
+grid.newpage()
+
+#grid::grid.draw(venn_plot_followup_raw)
+#invisible(dev.off())
+
+```
+
+
+
+
+
+# commonality analysis between stacked brain scan, social demographic lifestyle, psychopathology and genetics that predicts cognition
+
+## Compute the commonality effects
+
+```{r}
+common_analysis_gene_psy_brain_ses <- function(data_input=data_all_baseline){
+
+  print("gene_psy_brain_ses_model")
+  
+  gene_psy_brain_ses_model <- lmer(gfactor ~ brain_savg+ brain_cws+ mental_savg+mental_cws+gene_savg_favg+gene_cws_cwf+sdl_savg+sdl_cws+ (1|SITE_ID_L:REL_FAMILY_ID),data = data_input)
+# runs very slow with this multilevel model
+ # rsq_full_model <- MuMIn::r.squaredGLMM(full_model)
+rsq_gene_psy_brain_ses_model <- performance::r2(gene_psy_brain_ses_model)
+
+
+
+
+  print("gene_psy_brain_model")
+  
+  gene_psy_brain_model <- lmer(gfactor ~ brain_savg+ brain_cws+ mental_savg+mental_cws+gene_savg_favg+gene_cws_cwf+ (1|SITE_ID_L:REL_FAMILY_ID),data = data_input)
+# runs very slow with this multilevel model
+ # rsq_full_model <- MuMIn::r.squaredGLMM(full_model)
+rsq_gene_psy_brain_model <- performance::r2(gene_psy_brain_model)
+  
+
+ print("gene_brain_ses_model")
+  
+  gene_brain_ses_model <- lmer(gfactor ~ brain_savg+ brain_cws+gene_savg_favg+gene_cws_cwf+sdl_savg+sdl_cws+ (1|SITE_ID_L:REL_FAMILY_ID),data = data_input)
+# runs very slow with this multilevel model
+ # rsq_full_model <- MuMIn::r.squaredGLMM(full_model)
+rsq_gene_brain_ses_model <- performance::r2(gene_brain_ses_model)
+
+
+print("gene_psy_ses_model")
+  
+  gene_psy_ses_model <- lmer(gfactor ~  mental_savg+mental_cws+gene_savg_favg+gene_cws_cwf+sdl_savg+sdl_cws+ (1|SITE_ID_L:REL_FAMILY_ID),data = data_input)
+# runs very slow with this multilevel model
+ # rsq_full_model <- MuMIn::r.squaredGLMM(full_model)
+rsq_gene_psy_ses_model <- performance::r2(gene_psy_ses_model)
+
+
+print("psy_brain_ses_model")
+  
+psy_brain_ses_model <- lmer(gfactor ~ brain_savg+ brain_cws+ mental_savg+mental_cws+sdl_savg+sdl_cws+ (1|SITE_ID_L:REL_FAMILY_ID),data = data_input)
+# runs very slow with this multilevel model
+ # rsq_full_model <- MuMIn::r.squaredGLMM(full_model)
+rsq_psy_brain_ses_model <- performance::r2(psy_brain_ses_model)
+
+
+
+
+
+
+print("gene_ses_model")
+  
+  gene_ses_model <- lmer(gfactor ~ gene_savg_favg+gene_cws_cwf+sdl_savg+sdl_cws+ (1|SITE_ID_L:REL_FAMILY_ID),data = data_input)
+# runs very slow with this multilevel model
+ # rsq_full_model <- MuMIn::r.squaredGLMM(full_model)
+rsq_gene_ses_model <- performance::r2(gene_ses_model)
+
+
+print("psy_ses_model")
+  
+  psy_ses_model <- lmer(gfactor ~ mental_savg+mental_cws+sdl_savg+sdl_cws+ (1|SITE_ID_L:REL_FAMILY_ID),data = data_input)
+# runs very slow with this multilevel model
+ # rsq_full_model <- MuMIn::r.squaredGLMM(full_model)
+rsq_psy_ses_model <- performance::r2(psy_ses_model)
+
+
+
+print("brain_ses_model")
+  
+  brain_ses_model <- lmer(gfactor ~ brain_savg+ brain_cws+sdl_savg+sdl_cws+ (1|SITE_ID_L:REL_FAMILY_ID),data = data_input)
+# runs very slow with this multilevel model
+ # rsq_full_model <- MuMIn::r.squaredGLMM(full_model)
+rsq_brain_ses_model <- performance::r2(brain_ses_model)
+
+
+
+    print("brain_psy_model") 
+  brain_psy_model <- lmer(gfactor ~ brain_savg+ brain_cws+ mental_cws+mental_savg+ (1|SITE_ID_L:REL_FAMILY_ID),data = data_input)
+  rsq_brain_psy <- performance::r2(brain_psy_model)
+ 
+
+  print("gene_psy_model")
+  ## this model has singularity problem
+  gene_psy_model <- lmer(gfactor ~mental_cws+mental_savg+gene_savg_favg+gene_cws_cwf+ (1|SITE_ID_L:REL_FAMILY_ID),data = data_input)
+  rsq_gene_psy <- performance::r2(gene_psy_model)
+
+
+   print("brain_gene_model") 
+  brain_gene_model <- lmer(gfactor ~ brain_savg+ brain_cws+gene_savg_favg+gene_cws_cwf+ (1|SITE_ID_L:REL_FAMILY_ID),data = data_input)
+  rsq_brain_gene <- performance::r2(brain_gene_model)
+
+  
+  
+  
+  print("ses_model")
+  
+  ses_model <- lmer(gfactor ~ sdl_savg+sdl_cws+ (1|SITE_ID_L:REL_FAMILY_ID),data = data_input)
+# runs very slow with this multilevel model
+ # rsq_full_model <- MuMIn::r.squaredGLMM(full_model)
+rsq_ses_model <- performance::r2(ses_model)
+
+  
+  
+  
+  print("brain_model")
+  brain_model <- lmer(gfactor ~ brain_savg+ brain_cws+ (1|SITE_ID_L:REL_FAMILY_ID),data = data_input)
+  rsq_brain <- performance::r2(brain_model)
+
+
+  print("psy_model")
+  psy_model <- lmer(gfactor ~  mental_cws+mental_savg+ (1|SITE_ID_L:REL_FAMILY_ID),data = data_input)
+  rsq_psy <- performance::r2(psy_model)
+
+
+    print("gene_model")
+  gene_model <- lmer(gfactor ~ gene_savg_favg+gene_cws_cwf+ (1|SITE_ID_L:REL_FAMILY_ID),data = data_input)
+  rsp_gene <- performance::r2(gene_model)
+
+### marginal    
+    
+  ### unique effects
+  unique_gene_margin <- rsq_gene_psy_brain_ses_model$R2_marginal-rsq_psy_brain_ses_model$R2_marginal
+ 
+   unique_brain_margin <- rsq_gene_psy_brain_ses_model$R2_marginal-rsq_gene_psy_ses_model$R2_marginal
+  
+   unique_psy_margin <- rsq_gene_psy_brain_ses_model$R2_marginal-rsq_gene_brain_ses_model$R2_marginal
+  
+   unique_ses_margin <- rsq_gene_psy_brain_ses_model$R2_marginal-rsq_gene_psy_brain_model$R2_marginal
+### common effects between two variables
+common_brain_psy_margin <- rsq_gene_brain_ses_model$R2_marginal+rsq_gene_psy_ses_model$R2_marginal-rsq_gene_ses_model$R2_marginal-rsq_gene_psy_brain_ses_model$R2_marginal
+  
+common_gene_psy_margin <- rsq_gene_brain_ses_model$R2_marginal+rsq_psy_brain_ses_model$R2_marginal-rsq_brain_ses_model$R2_marginal-rsq_gene_psy_brain_ses_model$R2_marginal
+
+common_brain_gene_margin <- rsq_psy_brain_ses_model$R2_marginal+rsq_gene_psy_ses_model$R2_marginal-rsq_psy_ses_model$R2_marginal-rsq_gene_psy_brain_ses_model$R2_marginal
+
+common_brain_ses_margin <- rsq_gene_psy_brain_model$R2_marginal+rsq_gene_psy_ses_model$R2_marginal-rsq_gene_psy$R2_marginal-rsq_gene_psy_brain_ses_model$R2_marginal
+
+common_psy_ses_margin <- rsq_gene_psy_brain_model$R2_marginal+rsq_gene_brain_ses_model$R2_marginal-rsq_brain_gene$R2_marginal-rsq_gene_psy_brain_ses_model$R2_marginal
+
+common_gene_ses_margin <- rsq_gene_psy_brain_model$R2_marginal+rsq_psy_brain_ses_model$R2_marginal-rsq_brain_psy$R2_marginal-rsq_gene_psy_brain_ses_model$R2_marginal
+  # common effects between three variables
+common_brain_gene_psy_margin <-rsq_brain_ses_model$R2_marginal+rsq_gene_ses_model$R2_marginal+rsq_psy_ses_model$R2_marginal-rsq_gene_brain_ses_model$R2_marginal-rsq_gene_psy_ses_model$R2_marginal-rsq_psy_brain_ses_model$R2_marginal-rsq_ses_model$R2_marginal+rsq_gene_psy_brain_ses_model$R2_marginal
+
+common_ses_gene_psy_margin <-rsq_brain_ses_model$R2_marginal+rsq_brain_gene$R2_marginal+rsq_brain_psy$R2_marginal-rsq_gene_psy_brain_model$R2_marginal-rsq_gene_brain_ses_model$R2_marginal-rsq_psy_brain_ses_model$R2_marginal-rsq_brain$R2_marginal+rsq_gene_psy_brain_ses_model$R2_marginal
+
+common_brain_ses_psy_margin <-rsq_brain_gene$R2_marginal+rsq_gene_ses_model$R2_marginal+rsq_gene_psy$R2_marginal-rsq_gene_psy_brain_model$R2_marginal-rsq_gene_brain_ses_model$R2_marginal-rsq_gene_psy_ses_model$R2_marginal-rsp_gene$R2_marginal+rsq_gene_psy_brain_ses_model$R2_marginal
+
+common_brain_gene_ses_margin <-rsq_brain_psy$R2_marginal+rsq_gene_psy$R2_marginal+rsq_psy_ses_model$R2_marginal-rsq_gene_psy_brain_model$R2_marginal-rsq_gene_psy_ses_model$R2_marginal-rsq_psy_brain_ses_model$R2_marginal-rsq_psy$R2_marginal+rsq_gene_psy_brain_ses_model$R2_marginal
+
+# common effects between four variables
+
+common_brain_gene_psy_ses_margin <-rsq_ses_model$R2_marginal+rsq_brain$R2_marginal+rsq_psy$R2_marginal+rsp_gene$R2_marginal-rsq_gene_ses_model$R2_marginal-rsq_psy_ses_model$R2_marginal-rsq_brain_ses_model$R2_marginal-rsq_brain_psy$R2_marginal-rsq_gene_psy$R2_marginal-rsq_brain_gene$R2_marginal+rsq_gene_psy_brain_model$R2_marginal+rsq_gene_brain_ses_model$R2_marginal+rsq_gene_psy_ses_model$R2_marginal+rsq_psy_brain_ses_model$R2_marginal - rsq_gene_psy_brain_ses_model$R2_marginal 
+  
+  ### conditional
+  
+     
+       ### unique effects
+unique_gene_conditional <- rsq_gene_psy_brain_ses_model$R2_conditional-rsq_psy_brain_ses_model$R2_conditional
+
+unique_brain_conditional <- rsq_gene_psy_brain_ses_model$R2_conditional-rsq_gene_psy_ses_model$R2_conditional
+
+unique_psy_conditional <- rsq_gene_psy_brain_ses_model$R2_conditional-rsq_gene_brain_ses_model$R2_conditional
+
+unique_ses_conditional <- rsq_gene_psy_brain_ses_model$R2_conditional-rsq_gene_psy_brain_model$R2_conditional
+### common effects between two variables
+common_brain_psy_conditional <- rsq_gene_brain_ses_model$R2_conditional+rsq_gene_psy_ses_model$R2_conditional-rsq_gene_ses_model$R2_conditional-rsq_gene_psy_brain_ses_model$R2_conditional
+
+common_gene_psy_conditional <- rsq_gene_brain_ses_model$R2_conditional+rsq_psy_brain_ses_model$R2_conditional-rsq_brain_ses_model$R2_conditional-rsq_gene_psy_brain_ses_model$R2_conditional
+
+common_brain_gene_conditional <- 
+rsq_psy_brain_ses_model$R2_conditional+rsq_gene_psy_ses_model$R2_conditional-rsq_psy_ses_model$R2_conditional-rsq_gene_psy_brain_ses_model$R2_conditional
+
+common_brain_ses_conditional <- rsq_gene_psy_brain_model$R2_conditional+rsq_gene_psy_ses_model$R2_conditional-rsq_gene_psy$R2_conditional-rsq_gene_psy_brain_ses_model$R2_conditional
+
+common_psy_ses_conditional <- rsq_gene_psy_brain_model$R2_conditional+rsq_gene_brain_ses_model$R2_conditional-rsq_brain_gene$R2_conditional-rsq_gene_psy_brain_ses_model$R2_conditional
+
+common_gene_ses_conditional <- rsq_gene_psy_brain_model$R2_conditional+rsq_psy_brain_ses_model$R2_conditional-rsq_brain_psy$R2_conditional-rsq_gene_psy_brain_ses_model$R2_conditional
+  # common effects between three variables
+
+common_brain_gene_psy_conditional <-rsq_brain_ses_model$R2_conditional+rsq_gene_ses_model$R2_conditional+rsq_psy_ses_model$R2_conditional-rsq_gene_brain_ses_model$R2_conditional-rsq_gene_psy_ses_model$R2_conditional-rsq_psy_brain_ses_model$R2_conditional-rsq_ses_model$R2_conditional+rsq_gene_psy_brain_ses_model$R2_conditional
+
+common_ses_gene_psy_conditional <-rsq_brain_ses_model$R2_conditional+rsq_brain_gene$R2_conditional+rsq_brain_psy$R2_conditional-rsq_gene_psy_brain_model$R2_conditional-rsq_gene_brain_ses_model$R2_conditional-rsq_psy_brain_ses_model$R2_conditional-rsq_brain$R2_conditional+rsq_gene_psy_brain_ses_model$R2_conditional
+
+common_brain_ses_psy_conditional <-rsq_brain_gene$R2_conditional+rsq_gene_ses_model$R2_conditional+rsq_gene_psy$R2_conditional-rsq_gene_psy_brain_model$R2_conditional-rsq_gene_brain_ses_model$R2_conditional-rsq_gene_psy_ses_model$R2_conditional-rsp_gene$R2_conditional+rsq_gene_psy_brain_ses_model$R2_conditional
+
+common_brain_gene_ses_conditional <-rsq_brain_psy$R2_conditional+rsq_gene_psy$R2_conditional+rsq_psy_ses_model$R2_conditional-rsq_gene_psy_brain_model$R2_conditional-rsq_gene_psy_ses_model$R2_conditional-rsq_psy_brain_ses_model$R2_conditional-rsq_psy$R2_conditional+rsq_gene_psy_brain_ses_model$R2_conditional
+
+# common effects between four variables
+common_brain_gene_psy_ses_conditional <-rsq_ses_model$R2_conditional+rsq_brain$R2_conditional+rsq_psy$R2_conditional+rsp_gene$R2_conditional-rsq_gene_ses_model$R2_conditional-rsq_psy_ses_model$R2_conditional-rsq_brain_ses_model$R2_conditional-rsq_brain_psy$R2_conditional-rsq_gene_psy$R2_conditional-rsq_brain_gene$R2_conditional+rsq_gene_psy_brain_model$R2_conditional+rsq_gene_brain_ses_model$R2_conditional+rsq_gene_psy_ses_model$R2_conditional+rsq_psy_brain_ses_model$R2_conditional - rsq_gene_psy_brain_ses_model$R2_conditional 
+
+## anova analysis
+
+ses_significance <- anova(gene_psy_brain_ses_model,gene_psy_brain_model)
+
+psy_significance <- anova(gene_psy_brain_ses_model,gene_brain_ses_model)
+
+brain_significance <- anova(gene_psy_brain_ses_model,gene_psy_ses_model)
+
+gene_significance <- anova(gene_psy_brain_ses_model,psy_brain_ses_model)
+
+psy_ses_ses <- anova(psy_ses_model,psy_model)
+psy_ses_psy <- anova(psy_ses_model,ses_model)
+
+brain_psy_brain <- anova(brain_psy_model,psy_model)
+brain_psy_psy <- anova(brain_psy_model,brain_model)
+
+gene_psy_psy <- anova(gene_psy_model, gene_model)
+gene_psy_gene <- anova(gene_psy_model, psy_model)
+
+  output_common_tibble <- tibble(variable_effects = c("unique_gene",
+                                               "unique_brain",
+                                              "unique_psy",
+                                              "unique_ses",
+                                              "common_brain_psy",
+                                              "common_gene_psy",
+                                              "common_brain_gene",
+                                              "common_brain_ses",
+                                              "common_psy_ses",
+                                              "common_gene_ses",
+                                              "common_brain_gene_psy",
+                                              "common_ses_gene_psy",
+                                              "common_brain_ses_psy",
+                                              "common_brain_gene_ses",
+                                              "common_brain_gene_psy_ses"),
+                          marginal_rsq = c(unique_gene_margin,
+                                              unique_brain_margin,
+                                              unique_psy_margin,
+                                           unique_ses_margin,
+                                              common_brain_psy_margin,
+                                              common_gene_psy_margin,
+                                              common_brain_gene_margin,
+                                           common_brain_ses_margin,
+                                           common_psy_ses_margin,
+                                           common_gene_ses_margin,
+                                              common_brain_gene_psy_margin,
+                                          common_ses_gene_psy_margin,
+                                          common_brain_ses_psy_margin,
+                                          common_brain_gene_ses_margin,
+                                          common_brain_gene_psy_ses_margin),
+                          conditional_rsq = c(unique_gene_conditional,
+                                              unique_brain_conditional,
+                                              unique_psy_conditional,
+                                              unique_ses_conditional,
+                                              common_brain_psy_conditional,
+                                              common_gene_psy_conditional,
+                                              common_brain_gene_conditional,
+                                              common_brain_ses_conditional,
+                                              common_psy_ses_conditional,
+                                              common_gene_ses_conditional,
+                                              common_brain_gene_psy_conditional,
+                                              common_ses_gene_psy_conditional,
+                                              common_brain_ses_psy_conditional,
+                                              common_brain_gene_ses_conditional,
+                                              common_brain_gene_psy_ses_conditional))
+  output_rsq_tibble <- tibble(model_names<- c("gene",
+                                               "brain",
+                                              "psy",
+                                              "ses",
+                                              "brain_psy",
+                                              "gene_psy",
+                                              "brain_gene",
+                                              "brain_ses",
+                                              "psy_ses",
+                                              "gene_ses",
+                                              "brain_gene_psy",
+                                              "ses_gene_psy",
+                                              "brain_ses_psy",
+                                              "brain_gene_ses",
+                                              "brain_gene_psy_ses"),
+                          marginal_rsq = c(rsp_gene$R2_marginal,
+                                              rsq_brain$R2_marginal,
+                                              rsq_psy$R2_marginal,
+                                           rsq_ses_model$R2_marginal,
+                                              rsq_brain_psy$R2_marginal,
+                                              rsq_gene_psy$R2_marginal,
+                                              rsq_brain_gene$R2_marginal,
+                                           rsq_brain_ses_model$R2_marginal,
+                                           rsq_psy_ses_model$R2_marginal,
+                                           rsq_gene_ses_model$R2_marginal,
+                                              rsq_gene_psy_brain_model$R2_marginal,
+                                           rsq_gene_psy_ses_model$R2_marginal,
+                                           rsq_psy_brain_ses_model$R2_marginal,
+                                          rsq_gene_brain_ses_model$R2_marginal,
+                                          rsq_gene_psy_brain_ses_model$R2_marginal),
+                          conditional_rsq = c(rsp_gene$R2_conditional,
+                                              rsq_brain$R2_conditional,
+                                              rsq_psy$R2_conditional,
+                                           rsq_ses_model$R2_conditional,
+                                              rsq_brain_psy$R2_conditional,
+                                              rsq_gene_psy$R2_conditional,
+                                              rsq_brain_gene$R2_conditional,
+                                           rsq_brain_ses_model$R2_conditional,
+                                           rsq_psy_ses_model$R2_conditional,
+                                           rsq_gene_ses_model$R2_conditional,
+                                              rsq_gene_psy_brain_model$R2_conditional,
+                                           rsq_gene_psy_ses_model$R2_conditional,
+                                           rsq_psy_brain_ses_model$R2_conditional,
+                                          rsq_gene_brain_ses_model$R2_conditional,
+                                          rsq_gene_psy_brain_ses_model$R2_conditional))
+  
+  return(list(output_common_tibble=output_common_tibble,
+              output_rsq_tibble=output_rsq_tibble,
+              gene_psy_brain_ses_model=gene_psy_brain_ses_model,
+              gene_psy_brain_model=gene_psy_brain_model,
+              gene_brain_ses_model=gene_brain_ses_model,
+              gene_psy_ses_model=gene_psy_ses_model,
+              psy_brain_ses_model=psy_brain_ses_model,
+              gene_ses_model=gene_ses_model,
+              psy_ses_model=psy_ses_model,
+              brain_ses_model=brain_ses_model,
+              brain_psy_model=brain_psy_model,
+              gene_psy_model=gene_psy_model,
+              brain_gene_model=brain_gene_model,
+              ses_model=ses_model,
+              brain_model=brain_model,
+              psy_model=psy_model,
+              gene_model=gene_model,
+              ses_significance=ses_significance,
+              psy_significance=psy_significance,
+              brain_significance=brain_significance,
+              gene_significance=gene_significance,
+              psy_ses_ses = psy_ses_ses,
+              psy_ses_psy=psy_ses_psy,
+              brain_psy_brain = brain_psy_brain,
+              brain_psy_psy = brain_psy_psy,
+              gene_psy_psy = gene_psy_psy,
+              gene_psy_gene = gene_psy_gene
+             ))
+  }
+```
+
+
+
+```{r}
+common_analysis_gene_psy_brain_ses_baseline <-common_analysis_gene_psy_brain_ses(data_input=data_all_baseline)
+
+
+
+
+common_analysis_gene_psy_brain_ses_followup <-common_analysis_gene_psy_brain_ses(data_input=data_all_followup)
+
+
+
+```
+
+checking the significant level of the unique effects of the four feature model
+
+```{r}
+## baseline
+
+common_analysis_gene_psy_brain_ses_baseline[["ses_significance"]]
+
+common_analysis_gene_psy_brain_ses_baseline[["psy_significance"]]
+
+common_analysis_gene_psy_brain_ses_baseline[["brain_significance"]]
+
+common_analysis_gene_psy_brain_ses_baseline[["gene_significance"]]
+
+common_analysis_gene_psy_brain_ses_followup[["ses_significance"]]
+
+common_analysis_gene_psy_brain_ses_followup[["psy_significance"]]
+
+common_analysis_gene_psy_brain_ses_followup[["brain_significance"]]
+
+common_analysis_gene_psy_brain_ses_followup[["gene_significance"]]
+
+
+
+```
+
+checking the significance level of the two features models
+
+```{r}
+common_analysis_gene_psy_brain_ses_baseline[["psy_ses_ses"]] 
+ common_analysis_gene_psy_brain_ses_baseline[["psy_ses_psy"]]       
+
+
+common_analysis_gene_psy_brain_ses_followup[["psy_ses_ses"]] 
+ common_analysis_gene_psy_brain_ses_followup[["psy_ses_psy"]]       
+```
+
+```{r}
+common_analysis_gene_psy_brain_ses_baseline[["brain_psy_brain"]]               
+common_analysis_gene_psy_brain_ses_baseline[["brain_psy_psy"]]          
+
+ common_analysis_gene_psy_brain_ses_followup[["brain_psy_brain"]]               
+common_analysis_gene_psy_brain_ses_followup[["brain_psy_psy"]]  
+```
+
+
+```{r}
+common_analysis_gene_psy_brain_ses_baseline[["gene_psy_psy"]]               
+common_analysis_gene_psy_brain_ses_baseline[["gene_psy_gene"]]      
+
+common_analysis_gene_psy_brain_ses_followup[["gene_psy_psy"]]               
+common_analysis_gene_psy_brain_ses_followup[["gene_psy_gene"]]     
+```
+
+## processing the results and plotting
+
+
+This chunk needs to be checked manually for every analysis.
+
+```{r}
+baseline_gene_psy_brain_ses_vec <- common_analysis_gene_psy_brain_ses_baseline[[1]]$marginal_rsq
+
+### get rid of the negative values
+baseline_gene_psy_brain_ses_vec_corrected <- baseline_gene_psy_brain_ses_vec 
+baseline_gene_psy_brain_ses_vec_corrected[14] <- 0
+
+
+baseline_gene_psy_brain_ses_vec_corrected_percent <- baseline_gene_psy_brain_ses_vec_corrected/sum(baseline_gene_psy_brain_ses_vec_corrected)*100 
+baseline_gene_psy_brain_ses_vec_corrected_percent <- round(baseline_gene_psy_brain_ses_vec_corrected_percent,2)
+print(baseline_gene_psy_brain_ses_vec_corrected_percent)
+
+
+
+baseline_gene_psy_brain_ses_vec_corrected_raw <- baseline_gene_psy_brain_ses_vec_corrected*100 
+#baseline_gene_psy_brain_ses_vec_corrected_raw <- round(baseline_gene_psy_brain_ses_vec_corrected_raw,2)
+print(baseline_gene_psy_brain_ses_vec_corrected_raw)
+
+### manually assign values because there is some weird thing with label, to get the rounding at the plots right
+#baseline_gene_psy_brain_ses_vec_corrected_raw[1]<- 0.02496
+#baseline_gene_psy_brain_ses_vec_corrected_raw[6]<- 0.022
+#baseline_gene_psy_brain_ses_vec_corrected_raw[7]<- 0.081
+
+
+followup_gene_psy_brain_ses_vec <- common_analysis_gene_psy_brain_ses_followup[[1]]$marginal_rsq
+
+
+
+### get rid of the negative values
+followup_gene_psy_brain_ses_vec_corrected <- followup_gene_psy_brain_ses_vec 
+followup_gene_psy_brain_ses_vec_corrected[10] <- 0
+
+
+followup_gene_psy_brain_ses_vec_corrected_percentage <- followup_gene_psy_brain_ses_vec_corrected/sum(followup_gene_psy_brain_ses_vec_corrected)*100
+followup_gene_psy_brain_ses_vec_corrected_percentage <- round(followup_gene_psy_brain_ses_vec_corrected_percentage,2)
+print(followup_gene_psy_brain_ses_vec_corrected_percentage)
+
+
+
+followup_gene_psy_brain_ses_vec_corrected_raw <- followup_gene_psy_brain_ses_vec_corrected*100 
+#followup_gene_psy_brain_ses_vec_corrected_raw <- round(followup_gene_psy_brain_ses_vec_corrected_raw,2)
+print(followup_gene_psy_brain_ses_vec_corrected_raw)
+```
+
+## table results
+
+```{r}
+
+baseline_table <- common_analysis_gene_psy_brain_ses_baseline[[1]]%>%
+                  mutate(corrected_percent = baseline_gene_psy_brain_ses_vec_corrected_percent)%>% 
+                  mutate(corrected_raw = baseline_gene_psy_brain_ses_vec_corrected_raw)
+
+
+
+
+baseline_table%>% 
+    kableExtra::kbl(caption = "Commonality analysis in baseline") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+common_analysis_gene_psy_brain_ses_baseline[[2]]%>% 
+    kableExtra::kbl(caption = "R^2 metrics for all models in baseline") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+followup_table <- common_analysis_gene_psy_brain_ses_followup[[1]]%>% 
+                 mutate(correted_percent = followup_gene_psy_brain_ses_vec_corrected_percentage)%>%
+                 mutate(corrected_raw = followup_gene_psy_brain_ses_vec_corrected_raw)
+
+
+
+
+followup_table%>% 
+    kableExtra::kbl(caption = "Commonality analysis in followup") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+common_analysis_gene_psy_brain_ses_followup[[2]]%>% 
+    kableExtra::kbl(caption = "R^2 metrics for all models in followup") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+```
+
+## Print mixed model output
+
+Linear mixed models at baseline:
+
+```{r}
+
+tab_model(common_analysis_gene_psy_brain_ses_baseline$gene_psy_brain_ses_model,
+          common_analysis_gene_psy_brain_ses_baseline$gene_psy_brain_model,
+          common_analysis_gene_psy_brain_ses_baseline$gene_psy_ses_model,
+          common_analysis_gene_psy_brain_ses_baseline$psy_brain_ses_model,
+          common_analysis_gene_psy_brain_ses_baseline$gene_brain_ses_model,
+          common_analysis_gene_psy_brain_ses_baseline$psy_ses_model,
+          common_analysis_gene_psy_brain_ses_baseline$brain_ses_model,
+          common_analysis_gene_psy_brain_ses_baseline$brain_psy_model,
+          common_analysis_gene_psy_brain_ses_baseline$gene_psy_model,
+          common_analysis_gene_psy_brain_ses_baseline$brain_gene_model,
+          common_analysis_gene_psy_brain_ses_baseline$gene_ses_model,
+          common_analysis_gene_psy_brain_ses_baseline$ses_model,
+          common_analysis_gene_psy_brain_ses_baseline$brain_model,
+          common_analysis_gene_psy_brain_ses_baseline$psy_model,
+          common_analysis_gene_psy_brain_ses_baseline$gene_model)
+
+### print individual linear mixed models for genes at baseline
+
+## model with all four features
+
+tab_model(common_analysis_gene_psy_brain_ses_baseline$gene_psy_brain_ses_model)
+
+## model with mental health and social demographic lifestyle developmental
+
+tab_model(common_analysis_gene_psy_brain_ses_baseline$psy_ses_model)
+
+### model with brain MRI and mental health
+
+tab_model(common_analysis_gene_psy_brain_ses_baseline$brain_psy_model)
+
+### model with gene and mental health
+
+tab_model(common_analysis_gene_psy_brain_ses_baseline$gene_psy_model,
+          common_analysis_gene_psy_brain_ses_baseline$gene_model,
+          common_analysis_gene_psy_brain_ses_baseline$psy_model)
+```
+
+
+Linear mixed models at followup
+
+```{r}
+tab_model(common_analysis_gene_psy_brain_ses_followup$gene_psy_brain_ses_model,
+          common_analysis_gene_psy_brain_ses_followup$gene_psy_brain_model,
+          common_analysis_gene_psy_brain_ses_followup$gene_psy_ses_model,
+          common_analysis_gene_psy_brain_ses_followup$psy_brain_ses_model,
+          common_analysis_gene_psy_brain_ses_followup$gene_brain_ses_model,
+          common_analysis_gene_psy_brain_ses_followup$psy_ses_model,
+          common_analysis_gene_psy_brain_ses_followup$brain_ses_model,
+          common_analysis_gene_psy_brain_ses_followup$brain_psy_model,
+          common_analysis_gene_psy_brain_ses_followup$gene_psy_model,
+          common_analysis_gene_psy_brain_ses_followup$brain_gene_model,
+          common_analysis_gene_psy_brain_ses_followup$gene_ses_model,
+          common_analysis_gene_psy_brain_ses_followup$ses_model,
+          common_analysis_gene_psy_brain_ses_followup$brain_model,
+          common_analysis_gene_psy_brain_ses_followup$psy_model,
+          common_analysis_gene_psy_brain_ses_followup$gene_model)
+
+### print individual linear mixed models for genes at followup
+
+## model with all four features
+
+tab_model(common_analysis_gene_psy_brain_ses_followup$gene_psy_brain_ses_model)
+
+## model with mental health and social demographic lifestyle developmental
+
+tab_model(common_analysis_gene_psy_brain_ses_followup$psy_ses_model)
+
+### model with brain MRI and mental health
+
+tab_model(common_analysis_gene_psy_brain_ses_followup$brain_psy_model)
+
+### model with gene and mental health
+
+tab_model(common_analysis_gene_psy_brain_ses_followup$gene_psy_model,
+          common_analysis_gene_psy_brain_ses_followup$gene_model,
+          common_analysis_gene_psy_brain_ses_followup$psy_model)
+```
+
+
+
+## Baseline percentage of rsquare plot
+
+```{r,fig.height=10,fig.width=10}
+overrideTriple=TRUE
+
+quad_venn_baseline_percent <- draw.quad.venn(area1 = baseline_gene_psy_brain_ses_vec_corrected_percent[2]+baseline_gene_psy_brain_ses_vec_corrected_percent[5]+baseline_gene_psy_brain_ses_vec_corrected_percent[7]+baseline_gene_psy_brain_ses_vec_corrected_percent[8]+baseline_gene_psy_brain_ses_vec_corrected_percent[11]+baseline_gene_psy_brain_ses_vec_corrected_percent[13]+baseline_gene_psy_brain_ses_vec_corrected_percent[14]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  area2 = baseline_gene_psy_brain_ses_vec_corrected_percent[3]+baseline_gene_psy_brain_ses_vec_corrected_percent[5]+baseline_gene_psy_brain_ses_vec_corrected_percent[6]+baseline_gene_psy_brain_ses_vec_corrected_percent[9]+baseline_gene_psy_brain_ses_vec_corrected_percent[11]+baseline_gene_psy_brain_ses_vec_corrected_percent[12]+baseline_gene_psy_brain_ses_vec_corrected_percent[13]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  area3 = baseline_gene_psy_brain_ses_vec_corrected_percent[1]+baseline_gene_psy_brain_ses_vec_corrected_percent[6]+baseline_gene_psy_brain_ses_vec_corrected_percent[7]+baseline_gene_psy_brain_ses_vec_corrected_percent[10]+baseline_gene_psy_brain_ses_vec_corrected_percent[11]+baseline_gene_psy_brain_ses_vec_corrected_percent[12]+baseline_gene_psy_brain_ses_vec_corrected_percent[14]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  area4 =  baseline_gene_psy_brain_ses_vec_corrected_percent[4]+baseline_gene_psy_brain_ses_vec_corrected_percent[8]+baseline_gene_psy_brain_ses_vec_corrected_percent[9]+baseline_gene_psy_brain_ses_vec_corrected_percent[10]+baseline_gene_psy_brain_ses_vec_corrected_percent[12]+baseline_gene_psy_brain_ses_vec_corrected_percent[13]+baseline_gene_psy_brain_ses_vec_corrected_percent[14]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  n12 = baseline_gene_psy_brain_ses_vec_corrected_percent[5]+baseline_gene_psy_brain_ses_vec_corrected_percent[11]+baseline_gene_psy_brain_ses_vec_corrected_percent[13]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  n13 = baseline_gene_psy_brain_ses_vec_corrected_percent[7]+baseline_gene_psy_brain_ses_vec_corrected_percent[11]+baseline_gene_psy_brain_ses_vec_corrected_percent[14]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  n23 = baseline_gene_psy_brain_ses_vec_corrected_percent[6]+baseline_gene_psy_brain_ses_vec_corrected_percent[11]+baseline_gene_psy_brain_ses_vec_corrected_percent[12]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  n14 = baseline_gene_psy_brain_ses_vec_corrected_percent[8]+baseline_gene_psy_brain_ses_vec_corrected_percent[13]+baseline_gene_psy_brain_ses_vec_corrected_percent[14]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  n24 = baseline_gene_psy_brain_ses_vec_corrected_percent[9]+baseline_gene_psy_brain_ses_vec_corrected_percent[12]+baseline_gene_psy_brain_ses_vec_corrected_percent[13]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  n34 = baseline_gene_psy_brain_ses_vec_corrected_percent[10]+baseline_gene_psy_brain_ses_vec_corrected_percent[12]+baseline_gene_psy_brain_ses_vec_corrected_percent[14]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  n123 = baseline_gene_psy_brain_ses_vec_corrected_percent[11]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  n124 = baseline_gene_psy_brain_ses_vec_corrected_percent[13]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  n134 = baseline_gene_psy_brain_ses_vec_corrected_percent[14]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  n234 = baseline_gene_psy_brain_ses_vec_corrected_percent[12]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  n1234 = baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  category = c("Brain", "Mental Health", "Genes","Social Demographic Lifestyle"),
+  fill = c("#009E73", "#D55E00", "#CC79A7","#999999"),
+  lty = "dashed",
+  cat.col = c("#009E73", "#D55E00", "#CC79A7","#999999"),
+  filename = NULL,
+  cex = 0.001, ## label font size
+  cat.cex = 2,### caption font size
+  lwd = 2,
+  cat.fontface = "bold",
+  cat.dist = c(0.2, 0.2,0.1,0.1), # Modified
+  cat.pos = c(1,1,1,1),# Modified
+  print.mode="percent",
+  euler.d=F,
+  scaled=F,
+  reverse = F,
+  direct.area=TRUE)
+
+grid.newpage()
+
+#grid::grid.draw(quad_venn_baseline_percent)
+#invisible(dev.off())
+```
+
+The plot with label.
+
+```{r,fig.height=10,fig.width=10}
+#overrideTriple=TRUE
+
+quad_venn_baseline_percent_label <- draw.quad.venn(area1 = baseline_gene_psy_brain_ses_vec_corrected_percent[2]+baseline_gene_psy_brain_ses_vec_corrected_percent[5]+baseline_gene_psy_brain_ses_vec_corrected_percent[7]+baseline_gene_psy_brain_ses_vec_corrected_percent[8]+baseline_gene_psy_brain_ses_vec_corrected_percent[11]+baseline_gene_psy_brain_ses_vec_corrected_percent[13]+baseline_gene_psy_brain_ses_vec_corrected_percent[14]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  area2 = baseline_gene_psy_brain_ses_vec_corrected_percent[3]+baseline_gene_psy_brain_ses_vec_corrected_percent[5]+baseline_gene_psy_brain_ses_vec_corrected_percent[6]+baseline_gene_psy_brain_ses_vec_corrected_percent[9]+baseline_gene_psy_brain_ses_vec_corrected_percent[11]+baseline_gene_psy_brain_ses_vec_corrected_percent[12]+baseline_gene_psy_brain_ses_vec_corrected_percent[13]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  area3 = baseline_gene_psy_brain_ses_vec_corrected_percent[1]+baseline_gene_psy_brain_ses_vec_corrected_percent[6]+baseline_gene_psy_brain_ses_vec_corrected_percent[7]+baseline_gene_psy_brain_ses_vec_corrected_percent[10]+baseline_gene_psy_brain_ses_vec_corrected_percent[11]+baseline_gene_psy_brain_ses_vec_corrected_percent[12]+baseline_gene_psy_brain_ses_vec_corrected_percent[14]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  area4 =  baseline_gene_psy_brain_ses_vec_corrected_percent[4]+baseline_gene_psy_brain_ses_vec_corrected_percent[8]+baseline_gene_psy_brain_ses_vec_corrected_percent[9]+baseline_gene_psy_brain_ses_vec_corrected_percent[10]+baseline_gene_psy_brain_ses_vec_corrected_percent[12]+baseline_gene_psy_brain_ses_vec_corrected_percent[13]+baseline_gene_psy_brain_ses_vec_corrected_percent[14]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  n12 = baseline_gene_psy_brain_ses_vec_corrected_percent[5]+baseline_gene_psy_brain_ses_vec_corrected_percent[11]+baseline_gene_psy_brain_ses_vec_corrected_percent[13]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  n13 = baseline_gene_psy_brain_ses_vec_corrected_percent[7]+baseline_gene_psy_brain_ses_vec_corrected_percent[11]+baseline_gene_psy_brain_ses_vec_corrected_percent[14]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  n23 = baseline_gene_psy_brain_ses_vec_corrected_percent[6]+baseline_gene_psy_brain_ses_vec_corrected_percent[11]+baseline_gene_psy_brain_ses_vec_corrected_percent[12]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  n14 = baseline_gene_psy_brain_ses_vec_corrected_percent[8]+baseline_gene_psy_brain_ses_vec_corrected_percent[13]+baseline_gene_psy_brain_ses_vec_corrected_percent[14]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  n24 = baseline_gene_psy_brain_ses_vec_corrected_percent[9]+baseline_gene_psy_brain_ses_vec_corrected_percent[12]+baseline_gene_psy_brain_ses_vec_corrected_percent[13]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  n34 = baseline_gene_psy_brain_ses_vec_corrected_percent[10]+baseline_gene_psy_brain_ses_vec_corrected_percent[12]+baseline_gene_psy_brain_ses_vec_corrected_percent[14]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  n123 = baseline_gene_psy_brain_ses_vec_corrected_percent[11]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  n124 = baseline_gene_psy_brain_ses_vec_corrected_percent[13]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  n134 = baseline_gene_psy_brain_ses_vec_corrected_percent[14]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  n234 = baseline_gene_psy_brain_ses_vec_corrected_percent[12]+baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  n1234 = baseline_gene_psy_brain_ses_vec_corrected_percent[15],
+  category = c("Brain", "Mental Health", "Genes","Social Demographic Lifestyle"),
+  fill = c("#009E73", "#D55E00", "#CC79A7","#999999"),
+  lty = "dashed",
+  cat.col = c("#009E73", "#D55E00", "#CC79A7","#999999"),
+    filename = NULL,
+  cex = 2, ## label font size
+  cat.cex = 2.5,### caption font size
+  lwd = 2,
+  cat.fontface = "bold",
+  cat.dist = c(0.2, 0.2,0.1,0.1), # Modified
+  cat.pos = c(1,1,1,1),# Modified
+  print.mode="percent"
+  )
+
+
+grid.newpage()
+
+#grid::grid.draw(quad_venn_baseline_percent_label)
+#invisible(dev.off())
+```
+
+The raw r-squared plot.
+
+```{r,fig.height=10,fig.width=10}
+overrideTriple=TRUE
+
+quad_venn_baseline_raw <- draw.quad.venn(area1 = baseline_gene_psy_brain_ses_vec_corrected_raw[2]+baseline_gene_psy_brain_ses_vec_corrected_raw[5]+baseline_gene_psy_brain_ses_vec_corrected_raw[7]+baseline_gene_psy_brain_ses_vec_corrected_raw[8]+baseline_gene_psy_brain_ses_vec_corrected_raw[11]+baseline_gene_psy_brain_ses_vec_corrected_raw[13]+baseline_gene_psy_brain_ses_vec_corrected_raw[14]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+  area2 = baseline_gene_psy_brain_ses_vec_corrected_raw[3]+baseline_gene_psy_brain_ses_vec_corrected_raw[5]+baseline_gene_psy_brain_ses_vec_corrected_raw[6]+baseline_gene_psy_brain_ses_vec_corrected_raw[9]+baseline_gene_psy_brain_ses_vec_corrected_raw[11]+baseline_gene_psy_brain_ses_vec_corrected_raw[12]+baseline_gene_psy_brain_ses_vec_corrected_raw[13]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+  area3 = baseline_gene_psy_brain_ses_vec_corrected_raw[1]+baseline_gene_psy_brain_ses_vec_corrected_raw[6]+baseline_gene_psy_brain_ses_vec_corrected_raw[7]+baseline_gene_psy_brain_ses_vec_corrected_raw[10]+baseline_gene_psy_brain_ses_vec_corrected_raw[11]+baseline_gene_psy_brain_ses_vec_corrected_raw[12]+baseline_gene_psy_brain_ses_vec_corrected_raw[14]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+  area4 =  baseline_gene_psy_brain_ses_vec_corrected_raw[4]+baseline_gene_psy_brain_ses_vec_corrected_raw[8]+baseline_gene_psy_brain_ses_vec_corrected_raw[9]+baseline_gene_psy_brain_ses_vec_corrected_raw[10]+baseline_gene_psy_brain_ses_vec_corrected_raw[12]+baseline_gene_psy_brain_ses_vec_corrected_raw[13]+baseline_gene_psy_brain_ses_vec_corrected_raw[14]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+  n12 = baseline_gene_psy_brain_ses_vec_corrected_raw[5]+baseline_gene_psy_brain_ses_vec_corrected_raw[11]+baseline_gene_psy_brain_ses_vec_corrected_raw[13]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+  n13 = baseline_gene_psy_brain_ses_vec_corrected_raw[7]+baseline_gene_psy_brain_ses_vec_corrected_raw[11]+baseline_gene_psy_brain_ses_vec_corrected_raw[14]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+  n23 = baseline_gene_psy_brain_ses_vec_corrected_raw[6]+baseline_gene_psy_brain_ses_vec_corrected_raw[11]+baseline_gene_psy_brain_ses_vec_corrected_raw[12]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+  n14 = baseline_gene_psy_brain_ses_vec_corrected_raw[8]+baseline_gene_psy_brain_ses_vec_corrected_raw[13]+baseline_gene_psy_brain_ses_vec_corrected_raw[14]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+  n24 = baseline_gene_psy_brain_ses_vec_corrected_raw[9]+baseline_gene_psy_brain_ses_vec_corrected_raw[12]+baseline_gene_psy_brain_ses_vec_corrected_raw[13]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+  n34 = baseline_gene_psy_brain_ses_vec_corrected_raw[10]+baseline_gene_psy_brain_ses_vec_corrected_raw[12]+baseline_gene_psy_brain_ses_vec_corrected_raw[14]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+  n123 = baseline_gene_psy_brain_ses_vec_corrected_raw[11]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+  n124 = baseline_gene_psy_brain_ses_vec_corrected_raw[13]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+  n134 = baseline_gene_psy_brain_ses_vec_corrected_raw[14]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+  n234 = baseline_gene_psy_brain_ses_vec_corrected_raw[12]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+  n1234 = baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+  category = c("Brain", "Mental Health", "Genes","Social Demographic Lifestyle"),
+  fill = c("#009E73", "#D55E00", "#CC79A7","#999999"),
+  lty = "dashed",
+  cat.col = c("#009E73", "#D55E00", "#CC79A7","#999999"),
+  filename = NULL,
+  cex = 0.001, ## label font size
+  cat.cex = 2,### caption font size
+  lwd = 2,
+  cat.fontface = "bold",
+  cat.dist = c(0.2, 0.2,0.1,0.1), # Modified
+  cat.pos = c(1,1,1,1),# Modified
+  print.mode="percent",
+  euler.d=F,
+  scaled=F,
+  reverse = F,
+  direct.area=TRUE)
+
+grid.newpage()
+
+#grid::grid.draw(quad_venn_baseline_raw)
+#invisible(dev.off())
+```
+
+
+Raw r-square score with label
+
+
+The following function is changed from the source code of the package;
+
+The original code is in this page:
+
+https://github.com/cran/VennDiagram/blob/master/R/draw.quad.venn.R
+
+
+```{r}
+
+draw.quad.venn_round <- function(
+	area1,
+	area2,
+	area3,
+	area4,
+	n12,
+	n13,
+	n14,
+	n23,
+	n24,
+	n34,
+	n123,
+	n124,
+	n134,
+	n234,
+	n1234,
+	category = rep('', 4),
+	lwd = rep(2, 4),
+	lty = rep('solid', 4),
+	col = rep('black', 4),
+	fill = NULL,
+	alpha = rep(0.5, 4),
+	label.col = rep('black', 15),
+	cex = rep(1, 15),
+	fontface = rep('plain', 15),
+	fontfamily = rep('serif', 15),
+	cat.pos = c(-15, 15, 0, 0),
+	cat.dist = c(0.22, 0.22, 0.11, 0.11),
+	cat.col = rep('black', 4),
+	cat.cex = rep(1, 4),
+	cat.fontface = rep('plain', 4),
+	cat.fontfamily = rep('serif', 4),
+	cat.just = rep(list(c(0.5, 0.5)), 4),
+	rotation.degree = 0,
+	rotation.centre = c(0.5, 0.5),
+	ind = TRUE,
+    cex.prop=NULL,
+    print.mode = 'raw',
+    sigdigs=3,
+    direct.area = FALSE,
+    area.vector = 0,
+	...
+	) {
+
+	#area1 > area2 > area3 > area4
+	# check parameter lengths
+	if (length(category) == 1) { cat <- rep(category, 4); }
+	else if (length(category) != 4) { flog.error('Unexpected parameter length for "category"',name='VennDiagramLogger')
+stop('Unexpected parameter length for "category"'); }
+
+	if (length(lwd) == 1) { lwd <- rep(lwd, 4); }
+	else if (length(lwd) != 4) { flog.error('Unexpected parameter length for "lwd"',name='VennDiagramLogger')
+stop('Unexpected parameter length for "lwd"'); }
+
+	if (length(lty) == 1) { lty <- rep(lty, 4); }
+	else if (length(lty) != 4) { flog.error('Unexpected parameter length for "lty"',name='VennDiagramLogger')
+stop('Unexpected parameter length for "lty"'); }
+
+	if (length(col) == 1) { col <- rep(col, 4); }
+	else if (length(col) != 4) { flog.error('Unexpected parameter length for "col"',name='VennDiagramLogger')
+stop('Unexpected parameter length for "col"'); }
+
+	if (length(label.col) == 1) { label.col <- rep(label.col, 15); }
+	else if (length(label.col) != 15) { flog.error('Unexpected parameter length for "label.col"',name='VennDiagramLogger')
+stop('Unexpected parameter length for "label.col"'); }
+
+	if (length(cex) == 1) { cex <- rep(cex, 15); }
+	else if (length(cex) != 15) { flog.error('Unexpected parameter length for "cex"',name='VennDiagramLogger')
+stop('Unexpected parameter length for "cex"'); }
+
+	if (length(fontface) == 1) { fontface <- rep(fontface, 15); }
+	else if (length(fontface) != 15) { flog.error('Unexpected parameter length for "fontface"',name='VennDiagramLogger')
+stop('Unexpected parameter length for "fontface"'); }
+
+	if (length(fontfamily) == 1) { fontfamily <- rep(fontfamily, 15); }
+	else if (length(fontfamily) != 15) { flog.error('Unexpected parameter length for "fontfamily"',name='VennDiagramLogger')
+stop('Unexpected parameter length for "fontfamily"'); }
+
+	if (length(fill) == 1) { fill <- rep(fill, 4); }
+	else if (length(fill) != 4 & length(fill) != 0) { flog.error('Unexpected parameter length for "fill"',name='VennDiagramLogger')
+stop('Unexpected parameter length for "fill"'); }
+
+	if (length(alpha) == 1) { alpha <- rep(alpha, 4); }
+	else if (length(alpha) != 4 & length(alpha) != 0) { flog.error('Unexpected parameter length for "alpha"',name='VennDiagramLogger')
+stop('Unexpected parameter length for "alpha"'); }
+
+	if (length(cat.pos) == 1) { cat.pos <- rep(cat.pos, 4); }
+	else if (length(cat.pos) != 4) { flog.error('Unexpected parameter length for "cat.pos"',name='VennDiagramLogger')
+stop('Unexpected parameter length for "cat.pos"'); }
+
+	if (length(cat.dist) == 1) { cat.dist <- rep(cat.dist, 4); }
+	else if (length(cat.dist) != 4) { flog.error('Unexpected parameter length for "cat.dist"',name='VennDiagramLogger')
+stop('Unexpected parameter length for "cat.dist"'); }
+
+	if (length(cat.col) == 1) { cat.col <- rep(cat.col, 4); }
+	else if (length(cat.col) != 4) { flog.error('Unexpected parameter length for "cat.col"',name='VennDiagramLogger')
+stop('Unexpected parameter length for "cat.col"'); }
+
+	if (length(cat.cex) == 1) { cat.cex <- rep(cat.cex, 4); }
+	else if (length(cat.cex) != 4) { flog.error('Unexpected parameter length for "cat.cex"',name='VennDiagramLogger')
+stop('Unexpected parameter length for "cat.cex"'); }
+
+	if (length(cat.fontface) == 1) { cat.fontface <- rep(cat.fontface, 4); }
+	else if (length(cat.fontface) != 4) { flog.error('Unexpected parameter length for "cat.fontface"',name='VennDiagramLogger')
+stop('Unexpected parameter length for "cat.fontface"'); }
+
+	if (length(cat.fontfamily) == 1) { cat.fontfamily <- rep(cat.fontfamily, 4); }
+	else if (length(cat.fontfamily) != 4) { flog.error('Unexpected parameter length for "cat.fontfamily"',name='VennDiagramLogger')
+stop('Unexpected parameter length for "cat.fontfamily"'); }
+
+	if (!(is.list(cat.just) && length(cat.just) == 4 && length(cat.just[[1]]) == 2 && length(cat.just[[2]]) == 2 && length(cat.just[[3]]) == 2 && length(cat.just[[4]]) == 2)) { flog.error('Unexpected parameter format for "cat.just"',name='VennDiagramLogger')
+stop('Unexpected parameter format for "cat.just"'); }
+	cat.pos <- cat.pos + rotation.degree;
+	
+	if(direct.area){
+		areas <- area.vector;
+		#create the variables and assign their values from the area vector
+		for(i in 1:15)
+		{
+			assign(paste('a',i,sep=''),area.vector[i]);
+		}
+	}
+	else {
+		# generate partial areas from given arguments
+		a6  <- round(n1234,2);
+		a12 <- round(n123 - a6,2);
+		a11 <- round(n124 - a6,2);
+		a5  <- round(n134 - a6,2);
+		a7  <- round(n234 - a6,2);
+		a15 <- round(n12 - a6 - a11 - a12,2);
+		a4  <- round(n13 - a6 - a5 - a12,2);
+		a10 <- round(n14 - a6 - a5 - a11,2);
+		a13 <- round(n23 - a6 - a7 - a12,2);
+		a8  <- round(n24 - a6 - a7 - a11,2);
+		a2  <- round(n34 - a6 - a5 - a7,2);
+		a9  <- round(area1 - a4 - a5 - a6 - a10 - a11 - a12 - a15,2);
+		a14 <- round(area2 - a6 - a7 - a8 - a11 - a12 - a13 - a15,2);
+		a1  <- round(area3 - a2 - a4 - a5 - a6 - a7 - a12 - a13,2);
+		a3  <- round(area4 - a2 - a5 - a6 - a7 - a8 - a10 - a11,2);
+
+		# check plausibility and 0 partial areas
+		areas <- c(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15);
+	}
+	areas.error <- c(
+		'a1  <- area3 - a2 - a4 - a5 - a6 - a7 - a12 - a13',
+		'a2  <- n34 - a6 - a5 - a7',
+		'a3  <- area4 - a2 - a5 - a6 - a7 - a8 - a10 - a11',
+		'a4  <- n13 - a6 - a5 - a12',
+		'a5  <- n134 - a6',
+		'a6  <- n1234',
+		'a7  <- n234 - a6',
+		'a8  <- n24 - a6 - a7 - a11',
+		'a9  <- area1 - a4 - a5 - a6 - a10 - a11 - a12 - a15',
+		'a10 <- n14 - a6 - a5 - a11',
+		'a11 <- n124 - a6',
+		'a12 <- n123 - a6',
+		'a15 <- n12 - a6 - a11 - a12',
+		'a13 <- n23 - a6 - a7 - a12',
+		'a14 <- area2 - a6 - a7 - a8 - a11 - a12 - a13 - a15'
+		);
+	for (i in 1:length(areas)) {
+		if (areas[i] < 0) {
+			flog.error(paste('Impossible:', areas.error[i], 'produces negative area'),name='VennDiagramLogger')
+stop(paste('Impossible:', areas.error[i], 'produces negative area'));
+			}
+		}
+
+        ## rescaling area labels to be proportional to area
+        if(length(cex.prop) > 0){
+
+            if(length(cex.prop) != 1) {
+		flog.error('Value passed to cex.prop is not length 1',name='VennDiagramLogger')
+		stop('Value passed to cex.prop is not length 1')
+		}
+
+            ## figure out what function to use
+            func = cex.prop
+            if (!is(cex.prop, 'function')) {
+                if(cex.prop == 'lin'){
+                    func = function(x) x
+                }
+                else if(cex.prop == 'log10'){
+                    func = log10
+                }
+                else flog.error(paste0('Unknown value passed to cex.prop: ', cex.prop),name='VennDiagramLogger')
+stop(paste0('Unknown value passed to cex.prop: ', cex.prop))
+            }
+
+            ## rescale areas
+            maxArea = max(areas)            
+            for(i in 1:length(areas)){                
+                cex[i] = cex[i] * func(areas[i]) / func(maxArea)
+                if(cex[i] <= 0) stop(paste0('Error in rescaling of area labels: the label of area ',
+                          i, ' is less than or equal to zero'))
+            }
+        }
+
+	# initialize gList to hold all Grobs generated
+	grob.list <- gList();
+
+	# plot the ellipses of the Venn diagram
+	ellipse.positions <- matrix(
+		nrow = 4,
+		ncol = 7
+		);
+	colnames(ellipse.positions) <- c('x', 'y', 'a', 'b', 'rotation', 'fill.mapping', 'line.mapping');
+
+	ellipse.positions[1,] <- c(0.65, 0.47, 0.35, 0.20,  45, 2, 2);
+	ellipse.positions[2,] <- c(0.35, 0.47, 0.35, 0.20, 135, 1, 1);
+	ellipse.positions[3,] <- c(0.50, 0.57, 0.33, 0.15,  45, 4, 4);
+	ellipse.positions[4,] <- c(0.50, 0.57, 0.35, 0.15, 135, 3, 3);
+
+	# draw the ellipses themselves
+	for (i in 1:4) {
+		grob.list <- gList(
+			grob.list,
+			VennDiagram::ellipse(
+				x = ellipse.positions[i,'x'],
+				y = ellipse.positions[i,'y'],
+				a = ellipse.positions[i,'a'],
+				b = ellipse.positions[i,'b'],
+				rotation = ellipse.positions[i, 'rotation'],
+				gp = gpar(
+					lty = 0,
+					fill = fill[ellipse.positions[i,'fill.mapping']],
+					alpha = alpha[ellipse.positions[i,'fill.mapping']]
+					)
+				)
+			);
+		}
+
+	# draw the ellipse borders
+	for (i in 1:4) {
+		grob.list <- gList(
+			grob.list,
+			ellipse(
+				x = ellipse.positions[i,'x'],
+				y = ellipse.positions[i,'y'],
+				a = ellipse.positions[i,'a'],
+				b = ellipse.positions[i,'b'],
+				rotation = ellipse.positions[i, 'rotation'],
+				gp = gpar(
+					lwd = lwd[ellipse.positions[i,'line.mapping']],
+					lty = lty[ellipse.positions[i,'line.mapping']],
+					col = col[ellipse.positions[i,'line.mapping']],
+					fill = 'transparent'
+					)
+				)
+			);
+		}
+
+	# create the labels
+	label.matrix <- matrix(
+		nrow = 15,
+		ncol = 3
+		);
+	colnames(label.matrix) <- c('label', 'x', 'y');
+
+	label.matrix[ 1,] <- c(a1,  0.350, 0.77);
+	label.matrix[ 2,] <- c(a2,  0.500, 0.69);
+	label.matrix[ 3,] <- c(a3,  0.650, 0.77);
+	label.matrix[ 4,] <- c(a4,  0.310, 0.67);
+	label.matrix[ 5,] <- c(a5,  0.400, 0.58);
+	label.matrix[ 6,] <- c(a6,  0.500, 0.47);
+	label.matrix[ 7,] <- c(a7,  0.600, 0.58);
+	label.matrix[ 8,] <- c(a8,  0.690, 0.67);
+	label.matrix[ 9,] <- c(a9,  0.180, 0.58);
+	label.matrix[10,] <- c(a10, 0.320, 0.42);
+	label.matrix[11,] <- c(a11, 0.425, 0.38);
+	label.matrix[12,] <- c(a12, 0.575, 0.38);
+	label.matrix[13,] <- c(a13, 0.680, 0.42);
+	label.matrix[14,] <- c(a14, 0.820, 0.58);
+	label.matrix[15,] <- c(a15, 0.500, 0.28);
+
+	processedLabels <- rep('',length(label.matrix[,'label']));
+    if(print.mode[1] == 'percent'){
+			processedLabels <- paste(signif(label.matrix[,'label']/sum(label.matrix[,'label'])*100,digits=sigdigs),'%',sep='');
+			if(isTRUE(print.mode[2] == 'raw'))
+			{
+				processedLabels <- paste(processedLabels,'\n(',label.matrix[,'label'],')',sep='');
+			}
+		}
+	if(print.mode[1] == 'raw'){
+			processedLabels <- label.matrix[,'label'];
+			if(isTRUE(print.mode[2] == 'percent'))
+			{
+				processedLabels <- paste(processedLabels,'\n(',paste(signif(label.matrix[,'label']/sum(label.matrix[,'label'])*100,digits=sigdigs),'%)',sep=''),sep='');
+			}
+		}
+    
+	
+	for (i in 1:nrow(label.matrix)) {
+		grob.list <- gList(
+			grob.list,
+			textGrob(
+				label = processedLabels[i],
+				x = label.matrix[i,'x'],
+				y = label.matrix[i,'y'],
+				gp = gpar(
+					col = label.col[i],
+					cex = cex[i],
+					fontface = fontface[i],
+					fontfamily = fontfamily[i]
+					)
+				)
+			);
+		}
+		
+
+	# find the location and plot all the category names
+	cat.pos.x <- c(0.18, 0.82, 0.35, 0.65);
+	cat.pos.y <- c(0.58, 0.58, 0.77, 0.77);
+
+	for (i in 1:4) {
+
+		# work out location of the category label
+		this.cat.pos <- find.cat.pos(
+			x = cat.pos.x[i],
+			y = cat.pos.y[i],
+			pos = cat.pos[i],
+			dist = cat.dist[i]
+			);
+
+		# then print it
+		grob.list <- gList(
+			grob.list,
+			textGrob(
+				label = category[i],
+				x = this.cat.pos$x,
+				y = this.cat.pos$y,
+				just = cat.just[[i]],
+				gp = gpar(
+					col = cat.col[i],
+					cex = cat.cex[i],
+					fontface = cat.fontface[i],
+					fontfamily = cat.fontfamily[i]
+					)
+				)
+			);
+		}
+
+	# adjust grob.list to fit and return grob.list
+	grob.list <- VennDiagram::adjust.venn(VennDiagram::rotate.venn.degrees(grob.list, rotation.degree, rotation.centre[1], rotation.centre[2]), ...);
+
+	# draw diagram before returning gList is specified by user
+	if (ind) { grid.draw(grob.list); }
+	return(grob.list);
+	}
+```
+
+
+
+```{r,fig.height=7,fig.width=7}
+#overrideTriple=TRUE
+quad_venn_baseline_raw_label <- draw.quad.venn_round(area1 = baseline_gene_psy_brain_ses_vec_corrected_raw[2]+baseline_gene_psy_brain_ses_vec_corrected_raw[5]+baseline_gene_psy_brain_ses_vec_corrected_raw[7]+baseline_gene_psy_brain_ses_vec_corrected_raw[8]+baseline_gene_psy_brain_ses_vec_corrected_raw[11]+baseline_gene_psy_brain_ses_vec_corrected_raw[13]+baseline_gene_psy_brain_ses_vec_corrected_raw[14]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+area2 = baseline_gene_psy_brain_ses_vec_corrected_raw[3]+baseline_gene_psy_brain_ses_vec_corrected_raw[5]+baseline_gene_psy_brain_ses_vec_corrected_raw[6]+baseline_gene_psy_brain_ses_vec_corrected_raw[9]+baseline_gene_psy_brain_ses_vec_corrected_raw[11]+baseline_gene_psy_brain_ses_vec_corrected_raw[12]+baseline_gene_psy_brain_ses_vec_corrected_raw[13]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+area3 = baseline_gene_psy_brain_ses_vec_corrected_raw[1]+baseline_gene_psy_brain_ses_vec_corrected_raw[6]+baseline_gene_psy_brain_ses_vec_corrected_raw[7]+baseline_gene_psy_brain_ses_vec_corrected_raw[10]+baseline_gene_psy_brain_ses_vec_corrected_raw[11]+baseline_gene_psy_brain_ses_vec_corrected_raw[12]+baseline_gene_psy_brain_ses_vec_corrected_raw[14]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+area4 = baseline_gene_psy_brain_ses_vec_corrected_raw[4]+baseline_gene_psy_brain_ses_vec_corrected_raw[8]+baseline_gene_psy_brain_ses_vec_corrected_raw[9]+baseline_gene_psy_brain_ses_vec_corrected_raw[10]+baseline_gene_psy_brain_ses_vec_corrected_raw[12]+baseline_gene_psy_brain_ses_vec_corrected_raw[13]+baseline_gene_psy_brain_ses_vec_corrected_raw[14]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+n12 = baseline_gene_psy_brain_ses_vec_corrected_raw[5]+baseline_gene_psy_brain_ses_vec_corrected_raw[11]+baseline_gene_psy_brain_ses_vec_corrected_raw[13]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+n13 = baseline_gene_psy_brain_ses_vec_corrected_raw[7]+baseline_gene_psy_brain_ses_vec_corrected_raw[11]+baseline_gene_psy_brain_ses_vec_corrected_raw[14]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+n23 = baseline_gene_psy_brain_ses_vec_corrected_raw[6]+baseline_gene_psy_brain_ses_vec_corrected_raw[11]+baseline_gene_psy_brain_ses_vec_corrected_raw[12]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+n14 = baseline_gene_psy_brain_ses_vec_corrected_raw[8]+baseline_gene_psy_brain_ses_vec_corrected_raw[13]+baseline_gene_psy_brain_ses_vec_corrected_raw[14]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+n24 = baseline_gene_psy_brain_ses_vec_corrected_raw[9]+baseline_gene_psy_brain_ses_vec_corrected_raw[12]+baseline_gene_psy_brain_ses_vec_corrected_raw[13]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+n34 = baseline_gene_psy_brain_ses_vec_corrected_raw[10]+baseline_gene_psy_brain_ses_vec_corrected_raw[12]+baseline_gene_psy_brain_ses_vec_corrected_raw[14]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+n123 =baseline_gene_psy_brain_ses_vec_corrected_raw[11]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+n124 = baseline_gene_psy_brain_ses_vec_corrected_raw[13]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+n134 = baseline_gene_psy_brain_ses_vec_corrected_raw[14]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+n234 = baseline_gene_psy_brain_ses_vec_corrected_raw[12]+baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+n1234 = baseline_gene_psy_brain_ses_vec_corrected_raw[15],
+category = c("Brain", "Mental \nHealth", "Genes","Social Demo \nLifestyle Dev"),
+fill = c("#009E73", "#D55E00", "#CC79A7","#999999"),
+lty = "dashed",
+cat.col = c("#009E73", "#D55E00", "#CC79A7","#999999"),
+filename = NULL,
+cex = 2, ## label font size
+cat.cex = 2,### caption font size
+lwd = 2,
+cat.fontface = "bold",
+cat.dist = c(0.2, 0.25,0.1,0.13), # Modified
+cat.pos = c(-5,10,1,-13),# Modified
+#print.mode="percent"
+)
+
+
+grid.newpage()
+
+#grid::grid.draw(quad_venn_baseline_raw_label)
+#invisible(dev.off())
+```
+
+
+
+## followup percentage of rsquare plot
+
+```{r,fig.height=10,fig.width=10}
+overrideTriple=TRUE
+
+quad_venn_followup_percent <- draw.quad.venn(area1 = followup_gene_psy_brain_ses_vec_corrected_percentage[2]+followup_gene_psy_brain_ses_vec_corrected_percentage[5]+followup_gene_psy_brain_ses_vec_corrected_percentage[7]+followup_gene_psy_brain_ses_vec_corrected_percentage[8]+followup_gene_psy_brain_ses_vec_corrected_percentage[11]+followup_gene_psy_brain_ses_vec_corrected_percentage[13]+followup_gene_psy_brain_ses_vec_corrected_percentage[14]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  area2 = followup_gene_psy_brain_ses_vec_corrected_percentage[3]+followup_gene_psy_brain_ses_vec_corrected_percentage[5]+followup_gene_psy_brain_ses_vec_corrected_percentage[6]+followup_gene_psy_brain_ses_vec_corrected_percentage[9]+followup_gene_psy_brain_ses_vec_corrected_percentage[11]+followup_gene_psy_brain_ses_vec_corrected_percentage[12]+followup_gene_psy_brain_ses_vec_corrected_percentage[13]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  area3 = followup_gene_psy_brain_ses_vec_corrected_percentage[1]+followup_gene_psy_brain_ses_vec_corrected_percentage[6]+followup_gene_psy_brain_ses_vec_corrected_percentage[7]+followup_gene_psy_brain_ses_vec_corrected_percentage[10]+followup_gene_psy_brain_ses_vec_corrected_percentage[11]+followup_gene_psy_brain_ses_vec_corrected_percentage[12]+followup_gene_psy_brain_ses_vec_corrected_percentage[14]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  area4 =  followup_gene_psy_brain_ses_vec_corrected_percentage[4]+followup_gene_psy_brain_ses_vec_corrected_percentage[8]+followup_gene_psy_brain_ses_vec_corrected_percentage[9]+followup_gene_psy_brain_ses_vec_corrected_percentage[10]+followup_gene_psy_brain_ses_vec_corrected_percentage[12]+followup_gene_psy_brain_ses_vec_corrected_percentage[13]+followup_gene_psy_brain_ses_vec_corrected_percentage[14]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  n12 = followup_gene_psy_brain_ses_vec_corrected_percentage[5]+followup_gene_psy_brain_ses_vec_corrected_percentage[11]+followup_gene_psy_brain_ses_vec_corrected_percentage[13]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  n13 = followup_gene_psy_brain_ses_vec_corrected_percentage[7]+followup_gene_psy_brain_ses_vec_corrected_percentage[11]+followup_gene_psy_brain_ses_vec_corrected_percentage[14]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  n23 = followup_gene_psy_brain_ses_vec_corrected_percentage[6]+followup_gene_psy_brain_ses_vec_corrected_percentage[11]+followup_gene_psy_brain_ses_vec_corrected_percentage[12]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  n14 = followup_gene_psy_brain_ses_vec_corrected_percentage[8]+followup_gene_psy_brain_ses_vec_corrected_percentage[13]+followup_gene_psy_brain_ses_vec_corrected_percentage[14]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  n24 = followup_gene_psy_brain_ses_vec_corrected_percentage[9]+followup_gene_psy_brain_ses_vec_corrected_percentage[12]+followup_gene_psy_brain_ses_vec_corrected_percentage[13]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  n34 = followup_gene_psy_brain_ses_vec_corrected_percentage[10]+followup_gene_psy_brain_ses_vec_corrected_percentage[12]+followup_gene_psy_brain_ses_vec_corrected_percentage[14]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  n123 = followup_gene_psy_brain_ses_vec_corrected_percentage[11]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  n124 = followup_gene_psy_brain_ses_vec_corrected_percentage[13]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  n134 = followup_gene_psy_brain_ses_vec_corrected_percentage[14]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  n234 = followup_gene_psy_brain_ses_vec_corrected_percentage[12]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  n1234 = followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  category = c("Brain", "Mental Health", "Genes","Social Demographic Lifestyle"),
+  fill = c("#009E73", "#D55E00", "#CC79A7","#999999"),
+  lty = "dashed",
+  cat.col = c("#009E73", "#D55E00", "#CC79A7","#999999"),
+  filename = NULL,
+  cex = 0.001, ## label font size
+  cat.cex = 2,### caption font size
+  lwd = 2,
+  cat.fontface = "bold",
+  cat.dist = c(0.2, 0.2,0.1,0.1), # Modified
+  cat.pos = c(1,1,1,1),# Modified
+  print.mode="percent",
+  euler.d=F,
+  scaled=F,
+  reverse = F,
+  direct.area=TRUE)
+
+grid.newpage()
+
+#grid::grid.draw(quad_venn_followup_percent)
+#invisible(dev.off())
+```
+
+
+```{r,fig.height=10,fig.width=10}
+#overrideTriple=TRUE
+
+quad_venn_followup_percent_label <- draw.quad.venn(area1 = followup_gene_psy_brain_ses_vec_corrected_percentage[2]+followup_gene_psy_brain_ses_vec_corrected_percentage[5]+followup_gene_psy_brain_ses_vec_corrected_percentage[7]+followup_gene_psy_brain_ses_vec_corrected_percentage[8]+followup_gene_psy_brain_ses_vec_corrected_percentage[11]+followup_gene_psy_brain_ses_vec_corrected_percentage[13]+followup_gene_psy_brain_ses_vec_corrected_percentage[14]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  area2 = followup_gene_psy_brain_ses_vec_corrected_percentage[3]+followup_gene_psy_brain_ses_vec_corrected_percentage[5]+followup_gene_psy_brain_ses_vec_corrected_percentage[6]+followup_gene_psy_brain_ses_vec_corrected_percentage[9]+followup_gene_psy_brain_ses_vec_corrected_percentage[11]+followup_gene_psy_brain_ses_vec_corrected_percentage[12]+followup_gene_psy_brain_ses_vec_corrected_percentage[13]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  area3 = followup_gene_psy_brain_ses_vec_corrected_percentage[1]+followup_gene_psy_brain_ses_vec_corrected_percentage[6]+followup_gene_psy_brain_ses_vec_corrected_percentage[7]+followup_gene_psy_brain_ses_vec_corrected_percentage[10]+followup_gene_psy_brain_ses_vec_corrected_percentage[11]+followup_gene_psy_brain_ses_vec_corrected_percentage[12]+followup_gene_psy_brain_ses_vec_corrected_percentage[14]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  area4 =  followup_gene_psy_brain_ses_vec_corrected_percentage[4]+followup_gene_psy_brain_ses_vec_corrected_percentage[8]+followup_gene_psy_brain_ses_vec_corrected_percentage[9]+followup_gene_psy_brain_ses_vec_corrected_percentage[10]+followup_gene_psy_brain_ses_vec_corrected_percentage[12]+followup_gene_psy_brain_ses_vec_corrected_percentage[13]+followup_gene_psy_brain_ses_vec_corrected_percentage[14]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  n12 = followup_gene_psy_brain_ses_vec_corrected_percentage[5]+followup_gene_psy_brain_ses_vec_corrected_percentage[11]+followup_gene_psy_brain_ses_vec_corrected_percentage[13]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  n13 = followup_gene_psy_brain_ses_vec_corrected_percentage[7]+followup_gene_psy_brain_ses_vec_corrected_percentage[11]+followup_gene_psy_brain_ses_vec_corrected_percentage[14]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  n23 = followup_gene_psy_brain_ses_vec_corrected_percentage[6]+followup_gene_psy_brain_ses_vec_corrected_percentage[11]+followup_gene_psy_brain_ses_vec_corrected_percentage[12]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  n14 = followup_gene_psy_brain_ses_vec_corrected_percentage[8]+followup_gene_psy_brain_ses_vec_corrected_percentage[13]+followup_gene_psy_brain_ses_vec_corrected_percentage[14]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  n24 = followup_gene_psy_brain_ses_vec_corrected_percentage[9]+followup_gene_psy_brain_ses_vec_corrected_percentage[12]+followup_gene_psy_brain_ses_vec_corrected_percentage[13]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  n34 = followup_gene_psy_brain_ses_vec_corrected_percentage[10]+followup_gene_psy_brain_ses_vec_corrected_percentage[12]+followup_gene_psy_brain_ses_vec_corrected_percentage[14]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  n123 = followup_gene_psy_brain_ses_vec_corrected_percentage[11]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  n124 = followup_gene_psy_brain_ses_vec_corrected_percentage[13]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  n134 = followup_gene_psy_brain_ses_vec_corrected_percentage[14]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  n234 = followup_gene_psy_brain_ses_vec_corrected_percentage[12]+followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  n1234 = followup_gene_psy_brain_ses_vec_corrected_percentage[15],
+  category = c("Brain", "Mental Health", "Genes","Social Demographic Lifestyle"),
+  fill = c("#009E73", "#D55E00", "#CC79A7","#999999"),
+  lty = "dashed",
+  cat.col = c("#009E73", "#D55E00", "#CC79A7","#999999"),
+    filename = NULL,
+  cex = 2, ## label font size
+  cat.cex = 2.5,### caption font size
+  lwd = 2,
+  cat.fontface = "bold",
+  cat.dist = c(0.2, 0.2,0.1,0.1), # Modified
+  cat.pos = c(1,1,1,1),# Modified
+  print.mode="percent"
+  )
+
+
+grid.newpage()
+
+#grid::grid.draw(quad_venn_followup_percent_label)
+#invisible(dev.off())
+```
+
+The raw R-squared plot
+
+```{r,fig.height=10,fig.width=10}
+overrideTriple=TRUE
+
+quad_venn_followup_raw <- draw.quad.venn(area1 = followup_gene_psy_brain_ses_vec_corrected_raw[2]+followup_gene_psy_brain_ses_vec_corrected_raw[5]+followup_gene_psy_brain_ses_vec_corrected_raw[7]+followup_gene_psy_brain_ses_vec_corrected_raw[8]+followup_gene_psy_brain_ses_vec_corrected_raw[11]+followup_gene_psy_brain_ses_vec_corrected_raw[13]+followup_gene_psy_brain_ses_vec_corrected_raw[14]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  area2 = followup_gene_psy_brain_ses_vec_corrected_raw[3]+followup_gene_psy_brain_ses_vec_corrected_raw[5]+followup_gene_psy_brain_ses_vec_corrected_raw[6]+followup_gene_psy_brain_ses_vec_corrected_raw[9]+baseline_gene_psy_brain_ses_vec_corrected_raw[11]+followup_gene_psy_brain_ses_vec_corrected_raw[12]+followup_gene_psy_brain_ses_vec_corrected_raw[13]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  area3 = followup_gene_psy_brain_ses_vec_corrected_raw[1]+followup_gene_psy_brain_ses_vec_corrected_raw[6]+followup_gene_psy_brain_ses_vec_corrected_raw[7]+followup_gene_psy_brain_ses_vec_corrected_raw[10]+followup_gene_psy_brain_ses_vec_corrected_raw[11]+followup_gene_psy_brain_ses_vec_corrected_raw[12]+followup_gene_psy_brain_ses_vec_corrected_raw[14]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  area4 =  followup_gene_psy_brain_ses_vec_corrected_raw[4]+followup_gene_psy_brain_ses_vec_corrected_raw[8]+followup_gene_psy_brain_ses_vec_corrected_raw[9]+followup_gene_psy_brain_ses_vec_corrected_raw[10]+baseline_gene_psy_brain_ses_vec_corrected_raw[12]+followup_gene_psy_brain_ses_vec_corrected_raw[13]+baseline_gene_psy_brain_ses_vec_corrected_raw[14]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  n12 = followup_gene_psy_brain_ses_vec_corrected_raw[5]+followup_gene_psy_brain_ses_vec_corrected_raw[11]+followup_gene_psy_brain_ses_vec_corrected_raw[13]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  n13 = followup_gene_psy_brain_ses_vec_corrected_raw[7]+followup_gene_psy_brain_ses_vec_corrected_raw[11]+followup_gene_psy_brain_ses_vec_corrected_raw[14]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  n23 = followup_gene_psy_brain_ses_vec_corrected_raw[6]+followup_gene_psy_brain_ses_vec_corrected_raw[11]+followup_gene_psy_brain_ses_vec_corrected_raw[12]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  n14 = followup_gene_psy_brain_ses_vec_corrected_raw[8]+followup_gene_psy_brain_ses_vec_corrected_raw[13]+followup_gene_psy_brain_ses_vec_corrected_raw[14]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  n24 = followup_gene_psy_brain_ses_vec_corrected_raw[9]+followup_gene_psy_brain_ses_vec_corrected_raw[12]+followup_gene_psy_brain_ses_vec_corrected_raw[13]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  n34 = followup_gene_psy_brain_ses_vec_corrected_raw[10]+followup_gene_psy_brain_ses_vec_corrected_raw[12]+followup_gene_psy_brain_ses_vec_corrected_raw[14]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  n123 = followup_gene_psy_brain_ses_vec_corrected_raw[11]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  n124 = followup_gene_psy_brain_ses_vec_corrected_raw[13]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  n134 = followup_gene_psy_brain_ses_vec_corrected_raw[14]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  n234 = followup_gene_psy_brain_ses_vec_corrected_raw[12]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  n1234 = followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  category = c("Brain", "Mental \nHealth", "Genes","Social Demo \nLifestyle Dev"),
+  fill = c("#009E73", "#D55E00", "#CC79A7","#999999"),
+  lty = "dashed",
+  cat.col = c("#009E73", "#D55E00", "#CC79A7","#999999"),
+  filename = NULL,
+  cex = 0.001, ## label font size
+  cat.cex = 2,### caption font size
+  lwd = 2,
+  cat.fontface = "bold",
+  cat.dist = c(0.2, 0.2,0.1,0.1), # Modified
+  cat.pos = c(1,1,1,1),# Modified
+  print.mode="percent",
+  euler.d=F,
+  scaled=F,
+  reverse = F,
+  direct.area=TRUE)
+
+grid.newpage()
+
+#grid::grid.draw(quad_venn_followup_raw)
+#invisible(dev.off())
+```
+
+
+```{r,fig.height=7,fig.width=7}
+#overrideTriple=TRUE
+
+quad_venn_followup_raw_label <- draw.quad.venn_round(area1 = followup_gene_psy_brain_ses_vec_corrected_raw[2]+followup_gene_psy_brain_ses_vec_corrected_raw[5]+followup_gene_psy_brain_ses_vec_corrected_raw[7]+followup_gene_psy_brain_ses_vec_corrected_raw[8]+followup_gene_psy_brain_ses_vec_corrected_raw[11]+followup_gene_psy_brain_ses_vec_corrected_raw[13]+followup_gene_psy_brain_ses_vec_corrected_raw[14]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  area2 = followup_gene_psy_brain_ses_vec_corrected_raw[3]+followup_gene_psy_brain_ses_vec_corrected_raw[5]+followup_gene_psy_brain_ses_vec_corrected_raw[6]+followup_gene_psy_brain_ses_vec_corrected_raw[9]+baseline_gene_psy_brain_ses_vec_corrected_raw[11]+followup_gene_psy_brain_ses_vec_corrected_raw[12]+followup_gene_psy_brain_ses_vec_corrected_raw[13]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  area3 = followup_gene_psy_brain_ses_vec_corrected_raw[1]+followup_gene_psy_brain_ses_vec_corrected_raw[6]+followup_gene_psy_brain_ses_vec_corrected_raw[7]+followup_gene_psy_brain_ses_vec_corrected_raw[10]+followup_gene_psy_brain_ses_vec_corrected_raw[11]+followup_gene_psy_brain_ses_vec_corrected_raw[12]+followup_gene_psy_brain_ses_vec_corrected_raw[14]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  area4 =  followup_gene_psy_brain_ses_vec_corrected_raw[4]+followup_gene_psy_brain_ses_vec_corrected_raw[8]+followup_gene_psy_brain_ses_vec_corrected_raw[9]+followup_gene_psy_brain_ses_vec_corrected_raw[10]+baseline_gene_psy_brain_ses_vec_corrected_raw[12]+followup_gene_psy_brain_ses_vec_corrected_raw[13]+baseline_gene_psy_brain_ses_vec_corrected_raw[14]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  n12 = followup_gene_psy_brain_ses_vec_corrected_raw[5]+followup_gene_psy_brain_ses_vec_corrected_raw[11]+followup_gene_psy_brain_ses_vec_corrected_raw[13]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  n13 = followup_gene_psy_brain_ses_vec_corrected_raw[7]+followup_gene_psy_brain_ses_vec_corrected_raw[11]+followup_gene_psy_brain_ses_vec_corrected_raw[14]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  n23 = followup_gene_psy_brain_ses_vec_corrected_raw[6]+followup_gene_psy_brain_ses_vec_corrected_raw[11]+followup_gene_psy_brain_ses_vec_corrected_raw[12]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  n14 = followup_gene_psy_brain_ses_vec_corrected_raw[8]+followup_gene_psy_brain_ses_vec_corrected_raw[13]+followup_gene_psy_brain_ses_vec_corrected_raw[14]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  n24 = followup_gene_psy_brain_ses_vec_corrected_raw[9]+followup_gene_psy_brain_ses_vec_corrected_raw[12]+followup_gene_psy_brain_ses_vec_corrected_raw[13]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  n34 = followup_gene_psy_brain_ses_vec_corrected_raw[10]+followup_gene_psy_brain_ses_vec_corrected_raw[12]+followup_gene_psy_brain_ses_vec_corrected_raw[14]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  n123 = followup_gene_psy_brain_ses_vec_corrected_raw[11]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  n124 = followup_gene_psy_brain_ses_vec_corrected_raw[13]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  n134 = followup_gene_psy_brain_ses_vec_corrected_raw[14]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  n234 = followup_gene_psy_brain_ses_vec_corrected_raw[12]+followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  n1234 = followup_gene_psy_brain_ses_vec_corrected_raw[15],
+  category = c("Brain", "Mental \nHealth", "Genes","Social Demo \nLifestyle Dev"),
+  fill = c("#009E73", "#D55E00", "#CC79A7","#999999"),
+  lty = "dashed",
+  cat.col = c("#009E73", "#D55E00", "#CC79A7","#999999"),
+    filename = NULL,
+  cex = 2, ## label font size
+  cat.cex = 2,### caption font size
+  lwd = 2,
+  cat.fontface = "bold",
+   cat.dist = c(0.2, 0.25,0.1,0.13), # Modified
+  cat.pos = c(-5,10,1,-13),# Modified
+  #print.mode="percent"
+  )
+
+
+grid.newpage()
+
+#grid::grid.draw(quad_venn_followup_raw_label)
+#invisible(dev.off())
+```
+
+
+
+# draw the label of the venn diagrams
+
+Just draw the title of the venn diagram. Only the equation part is extracted.
+
+```{r,fig.width=10}
+
+ggplot()+
+  labs(title =  "<span style='font-size:15pt'>Cognitive Abilities ~ 
+    <span style='color:#009E73;'>Brain</span> +
+   <span style='color:#CC79A7;'>Genes</span> +
+   <span style='color:#999999;'>Social Demo Lifestyle Dev</span> +
+   <span style='color:#D55E00;'>Mental Health</span>
+    </span>",
+    x = NULL, y = NULL
+  )+
+theme(legend.position = "none",
+      plot.title = element_markdown(lineheight = 1,size = 15))
+
+```
+
+```{r,fig.width=10}
+
+ggplot()+
+  labs(title =  "<span style='font-size:15pt'>Cognitive Abilities ~ 
+    <span style='color:#009E73;'>Brain</span> +
+   <span style='color:#D55E00;'>Mental Health</span>
+    </span>",
+    x = NULL, y = NULL
+  )+
+theme(legend.position = "none",
+      plot.title = element_markdown(lineheight = 1,size = 15))
+
+```
+
+
+```{r,fig.width=10}
+
+ggplot()+
+  labs(title =  "<span style='font-size:15pt'>Cognitive Abilities ~ 
+   <span style='color:#999999;'>Social Demo Lifestyle Dev</span> +
+   <span style='color:#D55E00;'>Mental Health</span>
+    </span>",
+    x = NULL, y = NULL
+  )+
+theme(legend.position = "none",
+      plot.title = element_markdown(lineheight = 1,size = 15))
+
+```
+
+
+```{r,fig.width=10}
+
+ggplot()+
+  labs(title =  "<span style='font-size:15pt'>Cognitive Abilities ~ 
+    <span style='color:#D55E00;'>Mental Health</span> +
+   <span style='color:#CC79A7;'>Genes</span> 
+    </span>",
+    x = NULL, y = NULL
+  )+
+theme(legend.position = "none",
+      plot.title = element_markdown(lineheight = 1,size = 15))
+
+```
+
+

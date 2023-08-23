@@ -1,0 +1,77 @@
+﻿original,readable
+(Intercept),(Intercept)
+CBCL_SCR_SYN_ANXDEP_R,Child Anxious Depressed
+CBCL_SCR_SYN_WITHDEP_R,Child Withdrawn
+CBCL_SCR_SYN_SOMATIC_R,Child Somatic Problems
+CBCL_SCR_SYN_SOCIAL_R,Child Social Problems
+CBCL_SCR_SYN_THOUGHT_R,Child Thought Problems
+CBCL_SCR_SYN_ATTENTION_R,Child Attention Problems
+CBCL_SCR_SYN_RULEBREAK_R,Child Rule Break
+CBCL_SCR_SYN_AGGRESSIVE_R,Child Agression
+ASR_SCR_PERSTR_T,Parent Personal Strength
+ASR_SCR_ANXDEP_T,Parent Anxious Depressed
+ASR_SCR_WITHDRAWN_T,Parent Withdrawn
+ASR_SCR_SOMATIC_T,Parent Somatic Problems
+ASR_SCR_THOUGHT_T,Parent Thought Problems
+ASR_SCR_ATTENTION_T,Parent Attention Problems
+ASR_SCR_AGGRESSIVE_T,Parent Agression Problems
+ASR_SCR_RULEBREAK_T,Parent Rule Break
+ASR_SCR_INTRUSIVE_T,Parent Intrusive Symdrome
+mania_parent,Parent Mania
+BISAvg,Behavioral Inhibition
+BASRRAvg,Behavioral Activation Reward Responsiveness
+BASDriveAvg,Behavioral Activation Drive
+BASFunAvg,Behavioral Activation Fun
+UPPS_Y_SS_NEGATIVE_URGENCY,UPSS Negative Urgency
+UPPS_Y_SS_LACK_OF_PLANNING,UPSS Lack Of Planning
+UPPS_Y_SS_SENSATION_SEEKING,UPSS Sensation Seeking
+UPPS_Y_SS_POSITIVE_URGENCY,UPSS Positive Urgency
+UPPS_Y_SS_LACK_OF_PERSEVERANCE,UPSS Lack of Preseverance
+sleep_hours,Hours of Sleep
+sleep_disturb,Sleep Disturbance
+sleep_initiate_maintain,Sleep Initiating Maintaining
+sleep_breath,Sleep Breathing Disorders
+sleep_arousal,Sleep Arousal Disorders
+sleep_transition,Sleep Wake Transition Disorders
+sleep_somnolence,Sleep Excessive Somnolence 
+sleep_hyperhydrosis,Sleep Hyperhydrosis
+matureGames_Screen,Mature Video Games Play
+matureMovies_Screen,Mature Movies Watch
+wkdySum_Screen,Weekday Screen Use
+wkndSum_Screen,Weekend Screen Use
+deveplopment_birth_complications,Birth Complications
+deveplopment_pregnancy_complications,Pregnancy Complications
+bilingual_use,Bilingual Use
+educationAvg,Parents' Education
+combinedIncome,Parents' Income
+householdSize,Household Size
+econ_insecurities_sum,Economics Insecurities
+area_deprivation_index,Area Deprivation Index
+lead_risk,Lead Risk
+quartic_uniform_crime_reports,Uniform Crime Reports
+neighbo_safety_parent_sum,Parent reported Neighbourhood Safety
+neighbo_safety_child_sum,Child reported Neighbourhood Safety
+sumSchool_environment,School Environment
+sumSchool_involvement,School Involvement
+sumSchool_disengagement,School Disengagement
+parent_monitor_mean,Parental Monitoring
+fam_conflict_parent,Parent reported Family Conflict
+fam_conflict_children,Child report Family Conflict
+prosocial_parent_mean,Parent reported Prosocial
+prosocial_youth_mean,Child reported Prosocial
+phys_ind_daypweek_sum,Individual Physical Extracurricular Activities
+phys_team_daypweek_sum,Team Physical Extracurricular Activities
+art_daypweek_sum,Non Physical Extracurricular Activities
+physc_act_days,Physically Active
+tobacco_before_preg_X1,Tobbaco Before Pregnant
+tobacco_after_preg_X1,Tabbaco After Pregnant
+alcohol_before_preg_X1,Alcohol Before Pregnant
+alcohol_after_preg_X1,Alcohol After Pregnant
+marijuana_before_preg_X1,Marijuana Before Pregant
+marijuana_after_preg_X1,Marijuana After Pregant
+deveplopment_prematurity_X1,Developmental Prematurity
+marital_widowed,Parents Widowed 
+marital_divorced,Parents Divorced
+marital_separated,Parents Separated 
+marital_neverMarried,Parents Never Married 
+marital_livingWithPartner,Parents Living with Partner

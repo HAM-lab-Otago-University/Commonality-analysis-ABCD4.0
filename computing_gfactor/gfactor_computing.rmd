@@ -1,0 +1,345 @@
+---
+title: "Computing Gfactor based on cognitive scores based on NIH toolbox and Pearson scores of Rey auditory verbal learning test"
+author: "Yue Wang, Narun Pat"
+date:  "`r format(Sys.time(), '%d %b, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    number_sections: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+options(scipen = 999)
+```
+
+# Setting up the environment
+
+## Reset workspace and load libraries  
+
+
+```{r , results='hide', message=FALSE, warning=FALSE}
+rm(list=ls())
+gc()
+```
+
+
+Load libraries
+
+```{r , results='hide', message=FALSE, warning=FALSE}
+library(tidyverse)
+library(qgraph)
+library(pander)
+library(summarytools)
+library(sjPlot)
+library(sjmisc)
+library(sjlabelled)
+library(tidymodels)
+library(knitr)
+library(extrafont)
+## for poisson class of elastic net
+library(poissonreg)
+```
+
+
+## Setting up paths
+
+This analysis uses ABCD Release 4
+
+```{r, cache=FALSE}
+#ABCD3Fold <- '/Volumes/wd/ABCD3/'
+#ABCD3Fold <-"~/OneDrive - University of Otago/ABCD3/"
+#ABCD4Fold <-"/media/Data/ABCD/ABCD4/"
+ABCD4Fold <-"/Volumes/Data/ABCD/ABCD4/"
+#ABCD4Fold <- "//np-qnapa/Data/ABCD/ABCD4/"
+#setwd(paste0(ABCD3Fold, "Analysis/CognitionP"))
+dataFold <- paste0(ABCD4Fold, "ABCD4SQL/")
+
+#ABCD3Fold <-"/media/Data/ABCD/ABCD3/"
+ABCD3Fold <-"/Volumes/Data/ABCD/ABCD3/"
+utilFold <- paste0(ABCD3Fold, "Analysis/utilFunc/")
+
+#NDAfold = "/media/Data/ABCD/ABCD4/ABCDStudyNDA/"
+NDAfold = "/Volumes/Data/ABCD/ABCD4/ABCDStudyNDA/"
+
+
+#scriptfold = "/media/Data/Yue script/"
+scriptfold = "/Volumes/Data/Yue script/"
+
+gene_fold <- paste0(ABCD4Fold, "RicPGS/RicFIles20_Feb_2022/abcd-release-3.0_chrall_0.8-mac5-hg19-eur-qc-v9/")
+source(paste0(scriptfold,"stacking_gfactor_modelling/r_functions.R"))
+
+```
+
+Set up parallel library
+
+```{r}
+# parallel for ubuntu
+doParallel::registerDoParallel(cores=30)  
+
+## this one works for ubuntu but slow
+#library(doFuture)
+#registerDoFuture()
+#plan(multicore(workers = 30))
+
+### parallel for windows
+
+#library(doFuture)
+#registerDoFuture()
+#plan(multisession(workers = 30))
+```
+
+
+# Loading data
+
+
+## site information
+
+```{r, cache = FALSE, warning=FALSE}
+###loading site and scanner information
+Siteinfo <-tibble::as_tibble(read.csv(paste0(dataFold, "ABCD_LT01_DATA_TABLE.csv")))
+
+```
+
+Change the wrong site manually based on the: "Release Notes: Adolescent Brain Cognitive Development Study ℠ (ABCD Study ® ) Data Release 4.0 Changes and Known Issues"
+
+Only fixed the baseline and two year followup that is used in the analysis
+
+
+```{r}
+
+Siteinfo_fixed <- Siteinfo
+
+site_fix <- readRDS(paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/site_fix', '.RData'))
+
+for(i in 1:dim(site_fix)[1]){
+  fix_site_id  <- site_fix$SUBJECTKEY[i]
+  fix_site_event <- site_fix$EVENTNAME[i]
+  fix_site <- site_fix$SITE_ID_L[i]
+  Siteinfo_fixed$SITE_ID_L[which(Siteinfo_fixed$SUBJECTKEY== fix_site_id& Siteinfo_fixed$EVENTNAME == fix_site_event)] <- fix_site
+}
+
+Siteinfo <-Siteinfo_fixed 
+
+
+
+```
+
+## Cognition
+
+### Load neuro cognitive measures
+
+```{r, cache=FALSE}
+
+NIH_TB <-as_tibble(read.csv(paste0(dataFold,"ABCD_TBSS01_DATA_TABLE.csv"))) 
+CashChoice <-as_tibble(read.csv(paste0(dataFold,"CCT01_DATA_TABLE.csv"))) 
+LittleMan <-as_tibble(read.csv(paste0(dataFold,"LMTP201_DATA_TABLE.csv"))) 
+Pearson <-as_tibble(read.csv(paste0(dataFold,"ABCD_PS01_DATA_TABLE.csv"))) 
+#ABCD Youth Delay Discounting Scores	only used in the follow up data
+DelayDis <-as_tibble(read.csv(paste0(dataFold,"ABCD_YDDSS01_DATA_TABLE.csv")))
+#ABCD Emotional Stroop Task only used in the follow up data
+EmoStroop <-as_tibble(read.csv(paste0(dataFold,"ABCD_YEST01_DATA_TABLE.csv"))) 
+#ABCD Game of Dice Task	abcd_gdss01 only used in the follow up data
+GameOfDice <-as_tibble(read.csv(paste0(dataFold,"ABCD_GDSS01_DATA_TABLE.csv"))) 
+#ABCD Social Influence Task	abcd_siss01 only used in the follow up data
+SocialInfluence <-as_tibble(read.csv(paste0(dataFold,"ABCD_SISS01_DATA_TABLE.csv"))) 
+
+vision_idx <- as_tibble(read.csv(paste0(dataFold,"ABCD_SVS01_DATA_TABLE.CSV"))) %>% 
+  mutate(visionProb = ifelse(SNELLEN_VA_Y == 0 | SNELLEN_VA_Y == 1 | VIS_FLG == 2, 1, 0))
+
+#vision_idx %>% select(SNELLEN_VA_Y, VIS_FLG, visionProb) %>%  arrange(SNELLEN_VA_Y)
+```
+
+### sum cognition
+
+
+```{r, cache = FALSE, warning=FALSE}
+
+sumCog <- plyr::join_all(list(NIH_TB, CashChoice, LittleMan, Pearson, vision_idx), 
+               by=c('SUBJECTKEY','EVENTNAME'), type='full') %>%
+  select(SUBJECTKEY,EVENTNAME,
+         NIHTBX_FLANKER_UNCORRECTED, NIHTBX_CARDSORT_UNCORRECTED, NIHTBX_PATTERN_UNCORRECTED, 
+         NIHTBX_PICVOCAB_UNCORRECTED, NIHTBX_READING_UNCORRECTED, NIHTBX_PICTURE_UNCORRECTED,
+         PEA_RAVLT_LD_TRIAL_VII_TC, NIHTBX_LIST_UNCORRECTED, LMT_SCR_PERC_CORRECT, PEA_WISCV_TRS,
+         NIHTBX_FLUIDCOMP_UNCORRECTED, NIHTBX_CRYST_UNCORRECTED, NIHTBX_TOTALCOMP_UNCORRECTED, visionProb)
+
+```
+
+### Detect the observations with vision issues
+
+
+```{r}
+
+data_removed <- vision_idx %>% filter(SNELLEN_VA_Y == 0 | SNELLEN_VA_Y == 1 | VIS_FLG == 2)
+
+removed_subj <- data_removed$SUBJECTKEY
+length(removed_subj)
+
+```
+
+
+
+# Compute and process gfactor
+
+Here are the cognition tasks selected to compute gfactor: 
+
+NIH Toolbox Picture Vocabulary Test Age 3+
+
+NIH Toolbox Oral Reading Recognition Test Age 3+
+
+NIH Toolbox Flanker Inhibitory Control and Attention Test Ages 8-11
+
+NIH Toolbox Pattern Comparison Processing Speed Test Age 7+
+
+NIH Toolbox Picture Sequence Memory Test Age 8+
+
+Pearson Scores: Rey Auditory Verbal Learning Test
+
+
+```{r}
+
+TaskDVs1Batch = c("NIHTBX_PICVOCAB_UNCORRECTED", 
+                  "NIHTBX_READING_UNCORRECTED",
+              "NIHTBX_FLANKER_UNCORRECTED",
+              "NIHTBX_PATTERN_UNCORRECTED",
+              "NIHTBX_PICTURE_UNCORRECTED",
+               "PEA_RAVLT_LD_TRIAL_VII_TC")
+
+
+subj_info <-  c("SUBJECTKEY","EVENTNAME","SITE_ID_L")   
+
+
+sumCog_select <- sumCog %>% 
+  select(all_of(TaskDVs1Batch),all_of(c("SUBJECTKEY","EVENTNAME" )))
+  
+subj_info <- c("SUBJECTKEY","EVENTNAME","SITE_ID_L")
+
+sumCog_select <- left_join(sumCog_select,Siteinfo,by =c("SUBJECTKEY","EVENTNAME"))%>%
+  drop_na(SITE_ID_L) %>%
+  filter(SITE_ID_L != "site22")%>%
+  select(all_of(TaskDVs1Batch),all_of(subj_info))
+
+
+```
+
+### Remove the subjects due to vision
+
+```{r}
+
+sumCog_select <- sumCog_select %>% filter(!SUBJECTKEY %in% removed_subj)
+
+
+```
+
+## Compute and scale gfactor
+
+### The CFA model for gfactor
+
+```{r}
+
+NeuroCog2ndOrder <-'
+Language =~ NIHTBX_PICVOCAB_UNCORRECTED + NIHTBX_READING_UNCORRECTED 
+CognitiveFlexibity =~ NIHTBX_FLANKER_UNCORRECTED + NIHTBX_PATTERN_UNCORRECTED 
+MemoryRecall =~ NIHTBX_PICTURE_UNCORRECTED + PEA_RAVLT_LD_TRIAL_VII_TC
+g =~ NA*Language + CognitiveFlexibity  + MemoryRecall #estimate the loading of GenAbi -> as opposed to using it as a marker
+g ~~ 1*g #need to constrain variance to 1'
+
+```
+
+### Making splits based on site
+
+```{r}
+site_col <-  sumCog_select %>%
+  distinct(SITE_ID_L) %>% 
+  arrange(SITE_ID_L) 
+
+site_list <- as.list(site_col$SITE_ID_L)
+
+site_char <- as.character(unlist(site_col$SITE_ID_L))
+
+
+sumCog_select_split <- map(site_list, ~split_func(.x,data_input = sumCog_select)) 
+```
+
+### Compute gfactor
+
+The following step compute and process gfactor. The process is as follows:
+
+1. Scaling: scale the followup data based on the mean and standard deviation from baseline.
+2. Fit the CFA model called NeuroCog2ndOrder on the baseline train data. Then make predictions with this model on baseline train, test and followup train and test.
+3. The output gfactor is scaled again with the same method used in step 1.
+
+All the same response gfactor is used across all the analyses as a response variable.
+
+
+
+```{r,eval=TRUE}
+
+gfactor_list <- sumCog_select_split %>% map(.,~gfactor_cross_sites_seperate(split_input = .))
+
+names(gfactor_list) <- site_char
+
+```
+
+# Output and the metrics of the gfactor model
+
+Combine the baseline data together for model fitting.
+
+```{r}
+
+baseline_train <- sumCog_select_split[[1]]%>% 
+                  training()%>%
+                  filter(EVENTNAME=="baseline_year_1_arm_1")
+
+baseline_test <- sumCog_select_split[[1]]%>% 
+                  testing()%>%
+                  filter(EVENTNAME=="baseline_year_1_arm_1")
+
+
+baseline_data <- rbind(baseline_train,baseline_test)%>% 
+                 drop_na()
+```
+
+
+```{r}
+NeuroCog2ndOrder.Fit <- lavaan::cfa(model = NeuroCog2ndOrder, 
+                                      data = baseline_data,estimator="MLR")
+
+```
+
+
+```{r}
+
+lavaan::summary(NeuroCog2ndOrder.Fit, standardized = TRUE, rsquare = TRUE, fit.measures = TRUE)
+
+```
+```{r}
+semTools::reliabilityL2(NeuroCog2ndOrder.Fit,secondFactor = "g")
+
+```
+
+Plotting the path plots
+
+```{r}
+
+Plabels = c("Vocab","Reading","Flanker","Pattern","Picture","RAVLT","Language","Mental\nFlexibity","Memory\nRecall","Cognitive \nAbilities")
+semPlot::semPaths(object=NeuroCog2ndOrder.Fit,intercepts = F, residuals = F, 
+        whatLabels="no", what = "std", layout="tree", node.width = 1.4,
+         edge.label.cex = .6, nodeLabels=Plabels, edge.color="black",
+        sizeMan = 10, sizeLat = 10)
+
+```
+
+
+
+### Save the outputs
+
+```{r,eval=FALSE}
+saveRDS(gfactor_list, paste0(scriptfold,'genetics_psychopathology_common_scan_all_scripts/gfactor_scale_seperate_new', '.RData'))
+```
+
+

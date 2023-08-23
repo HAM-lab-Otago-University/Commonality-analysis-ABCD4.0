@@ -1,0 +1,1870 @@
+---
+title: "Partial Least Squares Regressions Predicting Cognitive Abilities from Mental Health Variables:  baseline and follow-up"
+author: "Yue Wang and Narun P"
+date:  "`r format(Sys.time(), '%d %b, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    number_sections: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+options(scipen = 999)
+```
+
+# Setting up the environment
+
+## Reset workspace and load libraries  
+
+```{r , results='hide', message=FALSE, warning=FALSE}
+rm(list=ls())
+gc()
+```
+
+```{r , results='hide', message=FALSE, warning=FALSE}
+library(tidyverse)
+library(qgraph)
+library(pander)
+library(summarytools)
+library(sjPlot)
+library(sjmisc)
+library(sjlabelled)
+library(tidymodels)
+library(knitr)
+library(extrafont)
+## for poisson class of elastic net
+library(poissonreg)
+library("sva")
+### plotting libraries
+library(ggtext)
+library(ggpubr)
+library(cowplot)
+library(ggthemes)
+### package for pls analysis (all packages are necessary for the model to run)
+library("pls")
+library("mixOmics")
+library(plsmod)
+### scatter plot packages
+
+library(viridis)
+library(ggpointdensity)
+```
+
+mixOmics was forcely installed in the environment. Some the select function from dplyr may not work. This is also true for map functions. So dplyr::select and purrr::map are suggested
+
+## Setting up paths
+
+Using ABCD 4.0 
+
+```{r, cache=FALSE, include=FALSE}
+### ubuntu and windows directories
+#ABCD3Fold <- '/Volumes/wd/ABCD3/'
+#ABCD3Fold <-"~/OneDrive - University of Otago/ABCD3/"
+#ABCD4Fold <-"/media/Data/ABCD/ABCD4/"
+#ABCD3Fold <-"/media/Data/ABCD/ABCD3/"
+#scriptfold = "/media/Data/Yue script/"
+
+# mac directories
+ABCD4Fold <-"/Volumes/Data/ABCD/ABCD4/"
+ABCD3Fold <-"/Volumes/Data/ABCD/ABCD3/"
+scriptfold = "/Volumes/Data/Yue script/"
+
+#ABCD4Fold <- "//np-qnapa/Data/ABCD/ABCD4/"
+#setwd(paste0(ABCD3Fold, "Analysis/CognitionP"))
+dataFold <- paste0(ABCD4Fold, "ABCD4SQL/")
+utilFold <- paste0(ABCD3Fold, "Analysis/utilFunc/")
+
+gene_fold <- paste0(ABCD4Fold, "RicPGS/RicFIles20_Feb_2022/abcd-release-3.0_chrall_0.8-mac5-hg19-eur-qc-v9/")
+
+```
+
+```{r}
+source(paste0(scriptfold,"stacking_gfactor_modelling/r_functions.R"))
+
+```
+set up parallel
+
+```{r}
+# parallel for ubuntu
+doParallel::registerDoParallel(cores=15)  
+
+## this one works for ubuntu but slow
+#library(doFuture)
+#registerDoFuture()
+#plan(multicore(workers = 30))
+
+### parallel for windows
+
+#library(doFuture)
+#registerDoFuture()
+#plan(multisession(workers = 30))
+```
+
+# Load data
+
+## Family relationship
+
+```{r, cache = FALSE, warning=FALSE}
+ACS <-read_csv(paste0(dataFold,"ACSPSW03_DATA_TABLE.csv")) 
+#knitr::kable(glimpse(ACS))
+
+#race_ethnicity
+#1 = White; 2 = Black; 3 = Hispanic; 4 = Asian; 5 = Other
+
+# guardian-report relationship
+# Relationship of the participant in his or her family
+# 0 = single; 1 = sibling; 2 = twin; 3 = triplet
+# ACS %>% count(REL_RELATIONSHIP)
+
+ACSselected <- ACS %>% 
+  dplyr::select(all_of(c("SUBJECTKEY", "EVENTNAME", "SEX", "INTERVIEW_AGE", "RACE_ETHNICITY", 
+                              "REL_FAMILY_ID", "ACS_RAKED_PROPENSITY_SCORE"))) %>%
+  mutate(RACE_ETHNICITY = recode_factor(as.factor(RACE_ETHNICITY),
+                `1` = "White", `2` = "Black", `3` = "Hispanic", `4` = "Asian", `5` = "Other",
+                .default = "White")) %>%
+  mutate(SEX = as.factor(SEX)) %>%
+  mutate(REL_FAMILY_ID = as.factor(REL_FAMILY_ID))
+
+ACSselected %>%
+ filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+ skimr::skim()
+
+```
+
+
+
+
+
+## site information
+
+```{r, cache = FALSE, warning=FALSE}
+###loading site and scanner information
+Siteinfo <-tibble::as_tibble(read.csv(paste0(dataFold, "ABCD_LT01_DATA_TABLE.csv")))
+
+```
+
+Change the wrong site manually based on the: "Release Notes: Adolescent Brain Cognitive Development Study ℠ (ABCD Study ® ) Data Release 4.0 Changes and Known Issues"
+
+only fixed the baseline and two year followup that is used in the analysis
+
+As ID is required not to show in the coding shared online, please refer to this file for the exact subject IDs.
+
+
+```{r}
+
+Siteinfo_fixed <- Siteinfo
+
+site_fix <- readRDS(paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/site_fix', '.RData'))
+
+for(i in 1:dim(site_fix)[1]){
+  fix_site_id  <- site_fix$SUBJECTKEY[i]
+  fix_site_event <- site_fix$EVENTNAME[i]
+  fix_site <- site_fix$SITE_ID_L[i]
+  Siteinfo_fixed$SITE_ID_L[which(Siteinfo_fixed$SUBJECTKEY== fix_site_id& Siteinfo_fixed$EVENTNAME == fix_site_event)] <- fix_site
+}
+
+Siteinfo <-Siteinfo_fixed 
+
+```
+
+## Load vision indicator to find subjects with problem in vision
+
+```{r, cache=FALSE}
+
+vision_idx <- as_tibble(read.csv(paste0(dataFold,"ABCD_SVS01_DATA_TABLE.CSV"))) %>% 
+  mutate(visionProb = ifelse(SNELLEN_VA_Y == 0 | SNELLEN_VA_Y == 1 | VIS_FLG == 2, 1, 0))
+
+#vision_idx %>% select(SNELLEN_VA_Y, VIS_FLG, visionProb) %>%  arrange(SNELLEN_VA_Y)
+```
+
+## feature names for plotting
+```{r}
+plotting_names <- readxl::read_excel(paste0(scriptfold,"Common_psy_gene_brain_all/PsychopathologyPlottingNames_NP.xlsx")) %>%dplyr::select(-"dictionary_name")
+
+plotting_names <- plotting_names %>%
+                  rename(feature_names=variable_name)
+
+```
+
+
+
+## mental health
+
+### Parent's report parent's mental health 
+
+Parent Adult Self Report Raw Scores  
+
+Adaptive Functioning and Strengths Scales: Education; Friends; Spouse/Partner; Family; Job; Personal Strengths
+
+Syndrome Scales: Anxious/Depressed; Withdrawn; Somatic Complaints; Thought Problems; Attention Problems; Aggressive Behavior; Rule-breaking Behavior; and Intrusive
+
+DSM-5-oriented Scales: Depressive Problems; Anxiety Problems; Somatic Problems; Avoidant Personality Problems; Attention Deficit/Hyperactivity Problems (Inattention and Hyperactivity/Impulsivity subscales); and Antisocial Personality Problems
+
+Substance Use Scales: Tobacco; Alcohol; Drugs
+
+Internalizing (INT), Attention Problems (ATT), Externalizing (EXT), and Total Problems (TOT) scales.
+
+```{r, cached=FALSE,  message=FALSE}
+ASRPrecomputed <-read_csv(paste0(dataFold,"ABCD_ASRS01_DATA_TABLE.csv")) 
+#glimpse(ASRPrecomputed)
+ASRPrecomputed_names<- ASRPrecomputed %>% dplyr::select(ends_with("_R") )%>% colnames()
+ASRPrecomputedSelected <- ASRPrecomputed %>% dplyr::select(all_of(c("SUBJECTKEY",
+                                                                    "EVENTNAME", ASRPrecomputed_names))) 
+
+ASRPrecomputedSelected %>%
+  filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+  skimr::skim()
+
+ASRPrecomputedSelected %>%
+  filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>%
+  skimr::skim()
+
+ASRPrecomputedSelected %>%
+  filter(EVENTNAME =="3_year_follow_up_y_arm_1") %>%
+  skimr::skim()
+```
+
+
+## Personality
+
+### Load BIS/BAS
+
+```{r, cache=FALSE, message= FALSE}
+
+BISBAS <-as_tibble(read.csv(paste0(dataFold,"ABCD_BISBAS01_DATA_TABLE.csv"))) %>% 
+# filter(EVENTNAME =="baseline_year_1_arm_1")   %>%
+  mutate(BISAvg=rowMeans(cbind(BISBAS2_Y,BISBAS3_Y,BISBAS4_Y,BISBAS6_Y), na.rm=F)) %>%
+  mutate(BASRRAvg=rowMeans(cbind(BISBAS8_Y,BISBAS10_Y,BISBAS11_Y,BISBAS12_Y), na.rm=F)) %>%
+  mutate(BASDriveAvg=rowMeans(cbind(BISBAS13_Y,BISBAS14_Y,BISBAS15_Y,BISBAS16_Y), na.rm=F)) %>%
+  mutate(BASFunAvg=rowMeans(cbind(BISBAS17_Y,BISBAS18_Y,BISBAS19_Y,BISBAS20_Y), na.rm=F)) %>% 
+  mutate(BASAllAvg=rowMeans(cbind(BASRRAvg,BASDriveAvg,BASFunAvg), na.rm=F)) %>%
+  dplyr::select(all_of(c('SUBJECTKEY','EVENTNAME','BISAvg','BASRRAvg','BASDriveAvg','BASFunAvg','BASAllAvg')))
+```
+
+### histrogram of BIS/BAS
+```{r, cache=FALSE}
+BISBAS %>% filter(EVENTNAME =="baseline_year_1_arm_1")   %>%
+ggplot(aes(x=BISAvg), bins = 100) + 
+  geom_histogram(color="black", fill="white") +
+  xlab("averaged BIS") +
+  theme_classic(base_size = 30)
+
+BISBAS %>% filter(EVENTNAME =="2_year_follow_up_y_arm_1" )   %>%
+ggplot(aes(x=BISAvg), bins = 100) + 
+  geom_histogram(color="black", fill="white") +
+  xlab("averaged BIS") +
+  theme_classic(base_size = 30)
+```
+
+```{r, cache=FALSE}
+BISBAS %>% filter(EVENTNAME =="baseline_year_1_arm_1")   %>%
+ggplot(aes(x=BASAllAvg)) + 
+  geom_histogram(color="black", fill="white", bins = 100) +
+  xlab("averaged BAS") +
+  theme_classic(base_size = 30)
+
+
+BISBAS %>% filter(EVENTNAME =="2_year_follow_up_y_arm_1")   %>%
+ggplot(aes(x=BASAllAvg)) + 
+  geom_histogram(color="black", fill="white", bins = 100) +
+  xlab("averaged BAS") +
+  theme_classic(base_size = 30)
+```
+
+
+
+### other mental health surveys from youth
+
+look like only ABCD Prodromal Psychosis Scale (PPS) and UPSS (beside BIS/BAS) are avaliable for the baseline.  
+Though  4595 data from PPS is missing. So we will not use PPS and only focus on UPPS.
+
+```{r, cache = FALSE, message= FALSE}
+#ABCD Sum Scores Mental Health Youth
+mentalHealthYouth <-as_tibble(read.csv(paste0(dataFold,"ABCD_MHY02_DATA_TABLE.csv"))) 
+
+mentalHealthYouth %>% filter(EVENTNAME =="baseline_year_1_arm_1") %>% dplyr::select(-1:-8)  %>%
+ skimr::skim()
+
+mentalHealthYouth %>% filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>% dplyr::select(-1:-8)  %>%
+ skimr::skim()
+
+UPPS <- mentalHealthYouth %>% dplyr::select(SUBJECTKEY,EVENTNAME, 
+                             UPPS_Y_SS_NEGATIVE_URGENCY, UPPS_Y_SS_LACK_OF_PLANNING,
+                             UPPS_Y_SS_SENSATION_SEEKING, UPPS_Y_SS_POSITIVE_URGENCY, UPPS_Y_SS_LACK_OF_PERSEVERANCE)
+
+
+```
+
+## loading cbcl raw score
+
+```{r, cache = FALSE, message= FALSE}
+#ABCD Sum Scores Mental Health Youth
+CBCL_sum_scores <-as_tibble(read.csv(paste0(dataFold,"ABCD_CBCLS01_DATA_TABLE.csv"))) 
+
+CBCL_sum_scores %>% filter(EVENTNAME =="baseline_year_1_arm_1") %>% dplyr::select(-1:-8)  %>%
+ skimr::skim()
+
+CBCL_sum_scores %>% filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>% dplyr::select(-1:-8)  %>%
+ skimr::skim()
+
+CBCL_sum_score_select <- CBCL_sum_scores %>% dplyr::select(all_of(c("SUBJECTKEY","EVENTNAME", 
+                             "CBCL_SCR_SYN_ANXDEP_R", "CBCL_SCR_SYN_WITHDEP_R", "CBCL_SCR_SYN_SOMATIC_R", "CBCL_SCR_SYN_SOCIAL_R",     
+                             "CBCL_SCR_SYN_THOUGHT_R","CBCL_SCR_SYN_ATTENTION_R",  "CBCL_SCR_SYN_RULEBREAK_R",  "CBCL_SCR_SYN_AGGRESSIVE_R")))
+
+
+```
+
+
+## Join data
+
+```{r, cache=FALSE}
+all_sum_vars <- 
+  plyr::join_all(list(Siteinfo, ASRPrecomputedSelected,BISBAS,UPPS,CBCL_sum_score_select,vision_idx,ACSselected), 
+                 by=c('SUBJECTKEY','EVENTNAME'), type='full') %>%
+  filter(visionProb != 1|is.na(visionProb)) %>% #remove subjects with eyesight problems 
+  dplyr::select(-visionProb)%>%
+  filter(EVENTNAME %in% c("baseline_year_1_arm_1","2_year_follow_up_y_arm_1"))## select the event for analysis
+## there are all NAs for event name of 42_month_follow_up_arm_1 and 30_month_follow_up_arm_1
+
+
+all_sum_vars %>%  filter(EVENTNAME =="baseline_year_1_arm_1") %>% dplyr::select(-1:-2) %>%
+   skimr::skim()
+
+
+all_sum_vars %>%  filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>% dplyr::select(-1:-2) %>%
+   skimr::skim()
+
+```
+
+
+## preprocess site
+make sure that there are no members from the same family at different sites
+
+```{r, cache = FALSE}
+all_sum_vars_baseline <- all_sum_vars %>% filter(EVENTNAME =="baseline_year_1_arm_1") 
+
+all_sum_vars_baseline %>% count(SITE_ID_L)
+
+# check if there are members from the same family at different sites. There are 6 of them.
+all_sum_vars_baseline %>%
+  drop_na(SITE_ID_L) %>%
+  filter(SITE_ID_L != "site22") %>%
+  count(REL_FAMILY_ID, SITE_ID_L) %>%
+  spread(SITE_ID_L, n, fill = 0) %>%
+  dplyr::select(-REL_FAMILY_ID) %>% 
+       as.matrix %>% 
+       crossprod
+
+#below will remove those 6 
+all_sum_vars_baseline_no_dup <- all_sum_vars_baseline %>%
+  drop_na(SITE_ID_L) %>%
+  filter(SITE_ID_L != "site22") %>%
+  group_by(REL_FAMILY_ID) %>% 
+  nest(SITE_ID_L, .key="SITE_ID_L") %>%
+  mutate(dup = ifelse(length(c(unlist(SITE_ID_L)))==1,0,
+                      ifelse(length(unique(c(unlist(SITE_ID_L)))) > 1,1,0))) %>%
+  unnest(SITE_ID_L) %>%
+  ungroup()
+
+family_exclude <- unique(all_sum_vars_baseline_no_dup$REL_FAMILY_ID[which(all_sum_vars_baseline_no_dup$dup==1)])
+
+all_sum_vars_no_dup <- all_sum_vars%>%
+                 filter(!REL_FAMILY_ID %in% family_exclude)%>%
+    drop_na(SITE_ID_L) %>%
+  filter(SITE_ID_L != "site22")
+```
+
+
+# Modeling for Mental health features fit with the cognitive abilities  
+
+Samples:
+REL_FAMILY_ID (9856 Levels)
+SITE_ID_L (need to remove 22nd site. having too few subjects)
+ALSO make sure about EVENTNAME
+
+Target:
+Factor analysis of cognitive abilities: gfactor
+
+72 Features:
+
+SEX
+Ethnicity - Black, Hispanic, Asian, Other
+
+Features by categories:
+
+Parent Mental Health(9):
+ASR_SCR_PERSTR_R
+ASR_SCR_ANXDEP_R
+ASR_SCR_WITHDRAWN_R
+ASR_SCR_SOMATIC_R
+ASR_SCR_THOUGHT_R
+ASR_SCR_ATTENTION_R
+ASR_SCR_AGGRESSIVE_R
+ASR_SCR_RULEBREAK_R
+ASR_SCR_INTRUSIVE_R
+
+Child Personality(9):
+BISAvg
+BASRRAvg
+BASDriveAvg
+BASFunAvg
+UPPS_Y_SS_NEGATIVE_URGENCY
+UPPS_Y_SS_LACK_OF_PLANNING
+UPPS_Y_SS_SENSATION_SEEKING
+UPPS_Y_SS_POSITIVE_URGENCY
+UPPS_Y_SS_LACK_OF_PERSEVERANCE
+
+CBCL sum scores
+
+"CBCL_SCR_SYN_ANXDEP_R"
+"CBCL_SCR_SYN_WITHDEP_R"
+"CBCL_SCR_SYN_SOMATIC_R"
+"CBCL_SCR_SYN_SOCIAL_R"
+"CBCL_SCR_SYN_THOUGHT_R"
+"CBCL_SCR_SYN_ATTENTION_R"
+"CBCL_SCR_SYN_RULEBREAK_R"
+"CBCL_SCR_SYN_AGGRESSIVE_R"
+
+
+
+## process data for modelling
+
+features:
+Child Personality(9)
+CBCL sum scores(8)
+Parent Mental Health(9)
+
+Set up vector of names based on different categories of features
+
+
+```{r}
+subj_info <-  c("SUBJECTKEY","EVENTNAME","SITE_ID_L")   
+```
+
+```{r}
+## features name vec
+
+CBCL_sum_scores_names <-c("CBCL_SCR_SYN_ANXDEP_R","CBCL_SCR_SYN_WITHDEP_R","CBCL_SCR_SYN_SOMATIC_R","CBCL_SCR_SYN_SOCIAL_R","CBCL_SCR_SYN_THOUGHT_R","CBCL_SCR_SYN_ATTENTION_R","CBCL_SCR_SYN_RULEBREAK_R","CBCL_SCR_SYN_AGGRESSIVE_R")
+
+
+Parent_Mental_Health_names<- c("ASR_SCR_PERSTR_R","ASR_SCR_ANXDEP_R","ASR_SCR_WITHDRAWN_R","ASR_SCR_SOMATIC_R","ASR_SCR_THOUGHT_R","ASR_SCR_ATTENTION_R","ASR_SCR_AGGRESSIVE_R","ASR_SCR_RULEBREAK_R","ASR_SCR_INTRUSIVE_R")
+
+Child_Personality_names<- c("BISAvg","BASRRAvg","BASDriveAvg","BASFunAvg","UPPS_Y_SS_NEGATIVE_URGENCY","UPPS_Y_SS_LACK_OF_PLANNING","UPPS_Y_SS_SENSATION_SEEKING","UPPS_Y_SS_POSITIVE_URGENCY","UPPS_Y_SS_LACK_OF_PERSEVERANCE")
+
+## features related to subject information
+
+features <- c(CBCL_sum_scores_names,Parent_Mental_Health_names,Child_Personality_names)
+
+
+all_features_no_dup <- all_sum_vars_no_dup %>% dplyr::select(all_of(subj_info),all_of(CBCL_sum_scores_names),all_of(Parent_Mental_Health_names),all_of(Child_Personality_names))
+
+### select the data table with subject information and variable names
+
+all_selected_no_dup <- all_sum_vars_no_dup %>% dplyr::select(all_of(subj_info),all_of(CBCL_sum_scores_names),all_of(Parent_Mental_Health_names),all_of(Child_Personality_names))
+
+
+```
+
+Making data splits based on the site.
+
+```{r}
+
+site_col <- all_selected_no_dup  %>%
+  distinct(SITE_ID_L) %>% 
+  arrange(SITE_ID_L) 
+
+site_list <- as.list(site_col$SITE_ID_L)
+
+site_char <- as.character(unlist(site_col$SITE_ID_L))
+
+split_func  <- function(site,data_input)
+{ 
+  train_indices <- which(data_input$SITE_ID_L != site)
+  test_indices <- which(data_input$SITE_ID_L == site)
+  
+  indices <-
+  list(analysis   = train_indices, 
+       assessment = test_indices)
+split <- make_splits(indices, data_input)
+return(split)}
+
+split_list <- purrr::map(site_list, ~split_func(.x,data_input =all_selected_no_dup ))
+
+
+names(split_list) <- site_char
+
+```
+
+process features
+
+The following data processing function does not include combat and removal of outliers. What is does is only scale baseline train and test data and then scale the followup train and test data with mean and standard deviation from baseline respectively.
+
+
+```{r,eval=FALSE}
+
+processed_psychopathology_scale_seperate_features_only <- purrr::map(.x= split_list,
+                                                              ~data_processing_cross_sites_seperate_no_combat_no_iqr(split_input = .)) 
+
+```
+
+
+```{r,eval=FALSE,echo=FALSE}
+saveRDS(processed_psychopathology_scale_seperate_features_only,paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/processed_psychopathology_scale_seperate_features_only_2.0', '.RData'))
+```
+
+## loading the psychopathology scores
+
+
+```{r,eval=TRUE,echo=FALSE}
+processed_psychopathology_scale_seperate_features_only <- readRDS(paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/processed_psychopathology_scale_seperate_features_only_2.0', '.RData'))
+```
+
+## Loading gfactor
+
+
+```{r,eval=TRUE,echo=FALSE}
+gfactor_list <- readRDS(paste0(scriptfold,'genetics_psychopathology_common_scan_all_scripts/gfactor_scale_seperate', '.RData'))
+```
+
+
+```{r}
+
+baseline_train_gfactor <- purrr::map(gfactor_list,"output_train_baseline")
+baseline_test_gfactor <- purrr::map(gfactor_list,"output_test_baseline")
+followup_train_gfactor <- purrr::map(gfactor_list,"output_train_followup")
+followup_test_gfactor <- purrr::map(gfactor_list,"output_test_followup")
+
+
+```
+
+
+Join the loaded data
+
+```{r}
+processed_train_baseline_scale_seperate_all <-processed_psychopathology_scale_seperate_features_only %>%
+                             purrr::map(.,~filter(.,EVENTNAME=="baseline_year_1_arm_1"& fold =="train")%>%
+                                   dplyr::select(-fold))
+
+
+processed_test_baseline_scale_seperate_all <-processed_psychopathology_scale_seperate_features_only %>%
+                             purrr::map(.,~filter(.,EVENTNAME=="baseline_year_1_arm_1"& fold =="test")%>%
+                                   dplyr::select(-fold))
+
+
+processed_train_followup_scale_seperate_all <- processed_psychopathology_scale_seperate_features_only %>%
+                              purrr::map(.,~filter(.,EVENTNAME=="2_year_follow_up_y_arm_1"& fold =="train")%>%
+                                   dplyr::select(-fold))
+
+
+processed_test_followup_scale_seperate_all <- processed_psychopathology_scale_seperate_features_only %>%
+                              purrr::map(.,~filter(.,EVENTNAME=="2_year_follow_up_y_arm_1"& fold =="test")%>%
+                                   dplyr::select(-fold))
+
+psychopathology_baseline_train <- purrr::map2(.x =baseline_train_gfactor ,
+                                       .y=processed_train_baseline_scale_seperate_all, 
+                                               ~left_join(.x,.y, by = "SUBJECTKEY")%>% drop_na())
+
+psychopathology_baseline_test <- purrr::map2(.x =baseline_test_gfactor ,.y=processed_test_baseline_scale_seperate_all, 
+                                               ~left_join(.x,.y, by ="SUBJECTKEY")%>% drop_na())
+
+psychopathology_followup_train <- purrr::map2(.x =followup_train_gfactor ,
+                                       .y=processed_train_followup_scale_seperate_all, 
+                                               ~left_join(.x,.y, by = "SUBJECTKEY")%>% drop_na())
+
+
+psychopathology_followup_test <- purrr::map2(.x =followup_test_gfactor ,
+                                      .y=processed_test_followup_scale_seperate_all, 
+                                               ~left_join(.x,.y, by = "SUBJECTKEY")%>% drop_na())
+
+
+
+psychopathology_feature_names <- psychopathology_baseline_train[[1]] %>%
+                                           dplyr::select( -all_of(subj_info),-"gfactor")%>%
+                                           colnames()%>% 
+                                           as.character()
+
+
+psychopathology_baseline_train_select <- purrr::map(.x = psychopathology_baseline_train,
+                                                     ~dplyr::select(.x,all_of(psychopathology_feature_names),"gfactor"))
+
+
+psychopathology_baseline_test_select <- purrr::map(.x = psychopathology_baseline_test,
+                                                     ~dplyr::select(.x,all_of(psychopathology_feature_names),"gfactor"))
+
+psychopathology_followup_train_select <- purrr::map(.x = psychopathology_followup_train,
+                                                     ~dplyr::select(.x,all_of(psychopathology_feature_names),"gfactor"))
+
+psychopathology_followup_test_select <- purrr::map(.x = psychopathology_followup_test ,
+                                                ~dplyr::select(.x,all_of(psychopathology_feature_names),"gfactor"))
+
+
+```
+
+
+
+# Fitting partial least square regression models
+
+## Modelling
+
+
+Baseline models and performance metrics.
+
+```{r}
+
+### baseline
+### setting up the recipe
+features <- psychopathology_feature_names
+psychopathology_baseline_recipe_list <- purrr::map(.x = psychopathology_baseline_train_select,
+                             ~recipe_prep(train_input=.x)) 
+
+#recipe_input <- psychopathology_baseline_recipe_list[[1]]
+### pls tuning
+psychopathology_pls_fit_baseline <- psychopathology_baseline_recipe_list %>% purrr::map(.,~pls_tune(recipe_input = .)) 
+
+psychopathology_pls_fit_wf <- purrr::map(psychopathology_pls_fit_baseline,"pls_final_wf")
+
+### model final fit and prediction
+psychopathology_pls_pred_baseline <- purrr::pmap(list(psychopathology_baseline_recipe_list,
+                                                         psychopathology_pls_fit_wf,
+                                                         psychopathology_baseline_test_select),~
+                                                 model_final_fit(recipe_input = ..1, 
+                                    wf_input = ..2,
+                                    test_data = ..3)) 
+
+
+
+
+
+psychopathology_pls_pred_baseline_results <- purrr::map(psychopathology_pls_pred_baseline,"model_predict")
+
+
+psychopathology_pls_pred_baseline_train <- purrr::pmap(list(psychopathology_baseline_recipe_list,
+                                                         psychopathology_pls_fit_wf,
+                                                         psychopathology_baseline_train_select),~
+                                                 model_final_fit(recipe_input = ..1, 
+                                    wf_input = ..2,
+                                    test_data = ..3)) 
+
+
+
+
+
+psychopathology_pls_pred_baseline_results_train <- purrr::map(psychopathology_pls_pred_baseline_train,"model_predict")
+### compute the performance metric
+psychopathology_baseline_metric <- purrr::map2(.x=psychopathology_pls_pred_baseline_results,
+     .y=psychopathology_baseline_test,~metric_compute_site(data_input =.x ,
+                                           site_input = .y)) %>%
+                      do.call(rbind,.)
+
+      psychopathology_baseline_metric%>% 
+    kableExtra::kbl(caption = "metrics for all sites in baseline") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+
+psychopathology_baseline_metric_avg <- average_metric_one_mod(metric_list =psychopathology_baseline_metric)
+
+psychopathology_baseline_metric_avg_table <- psychopathology_baseline_metric_avg %>%
+  mutate_if(is.numeric, round, digits=3)%>%
+  mutate("correlation (sd)" = paste0(correlation," (",cor_sd,")"))%>%
+  mutate("tradrsq (sd)" = paste0(tradrsq," (",rsq_sd,")"))%>%
+  mutate("MAE (sd)" = paste0(MAE," (",mae_sd,")"))%>%
+  mutate("RMSE (sd)" = paste0(RMSE," (",rmse_sd,")"))%>%
+  select_if(is.character)
+  
+avg_table_var_names <- c("correlation (sd)", "tradrsq (sd)","MAE (sd)","RMSE (sd)"  )
+
+  psychopathology_baseline_metric_avg_table%>%
+    dplyr::select(all_of(avg_table_var_names))%>%
+    kableExtra::kbl(caption = paste0("metrics for modalities averaged across sites in baseline")) %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+      
+```
+
+Modelling followup
+
+```{r}
+### setting up the recipe
+psychopathology_followup_recipe_list <- purrr::map(.x = psychopathology_followup_train_select,
+                             ~recipe_prep(train_input=.x)) 
+
+#recipe_input <- psychopathology_baseline_recipe_list[[1]]
+### pls tuning
+psychopathology_pls_fit_followup <- psychopathology_followup_recipe_list %>% 
+                                    purrr::map(.,~pls_tune(recipe_input = .)) 
+
+psychopathology_pls_fit_wf_followup <- purrr::map(psychopathology_pls_fit_followup,"pls_final_wf")
+
+### model final fit and prediction
+psychopathology_pls_pred_followup <- purrr::pmap(list(psychopathology_followup_recipe_list,
+                                                         psychopathology_pls_fit_wf_followup,
+                                                         psychopathology_followup_test_select),~
+                                                 model_final_fit(recipe_input = ..1, 
+                                    wf_input = ..2,
+                                    test_data = ..3)) 
+
+
+
+
+
+psychopathology_pls_pred_followup_results <- purrr::map(psychopathology_pls_pred_followup,"model_predict")
+
+
+psychopathology_pls_pred_followup_train <- purrr::pmap(list(psychopathology_followup_recipe_list,
+                                                         psychopathology_pls_fit_wf_followup,
+                                                         psychopathology_followup_train_select),~
+                                                 model_final_fit(recipe_input = ..1, 
+                                    wf_input = ..2,
+                                    test_data = ..3)) 
+
+
+psychopathology_pls_pred_followup_results_train <- purrr::map(psychopathology_pls_pred_followup_train,"model_predict")
+### compute the performance metric
+psychopathology_followup_metric <- purrr::map2(.x=psychopathology_pls_pred_followup_results,
+     .y=psychopathology_followup_test,~metric_compute_site(data_input =.x ,
+                                           site_input = .y)) %>%
+                      do.call(rbind,.)
+
+      psychopathology_followup_metric%>% 
+    kableExtra::kbl(caption = "metrics for all sites in followup") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+
+psychopathology_followup_metric_avg <- average_metric_one_mod(metric_list =psychopathology_followup_metric)
+
+psychopathology_followup_metric_avg_table <- psychopathology_followup_metric_avg %>%
+  mutate_if(is.numeric, round, digits=3)%>%
+  mutate("correlation (sd)" = paste0(correlation," (",cor_sd,")"))%>%
+  mutate("tradrsq (sd)" = paste0(tradrsq," (",rsq_sd,")"))%>%
+  mutate("MAE (sd)" = paste0(MAE," (",mae_sd,")"))%>%
+  mutate("RMSE (sd)" = paste0(RMSE," (",rmse_sd,")"))%>%
+  select_if(is.character)
+  
+avg_table_var_names <- c("correlation (sd)", "tradrsq (sd)","MAE (sd)","RMSE (sd)"  )
+
+  psychopathology_followup_metric_avg_table%>%
+    dplyr::select(all_of(avg_table_var_names))%>%
+    kableExtra::kbl(caption = paste0("metrics for modalities averaged across sites in followup")) %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+```
+
+
+
+## Plotting the trace of performance metric against the number of factors.
+
+Baseline
+
+
+```{r}
+
+## get the model grid
+psychopathology_pls_grid_baseline  <- purrr::map(psychopathology_pls_fit_baseline,"pls_grid")
+psychopathology_pls_param_baseline  <- purrr::map(psychopathology_pls_fit_baseline,"best_pls_model")
+
+factor_metric_plot <- function(grid_input, param_input){
+  selected_comp <- param_input$num_comp
+  
+  comp_plot <-  grid_input %>% 
+  collect_metrics() %>% 
+  ggplot(aes(num_comp, mean, col = .metric)) +
+  geom_point() +
+  geom_line() +
+  geom_vline(xintercept = selected_comp, size=1.5)+
+  scale_x_continuous(n.breaks = 26) +
+  labs(x = "Number of components",
+       y = "Indicator",
+       title = "Plot of RMSE vs number of components ",
+       subtitle = paste0("Optimal number of components is ", selected_comp)) +
+ facet_grid(.metric ~.) +
+  theme_few() +
+  theme(legend.position = "none")
+
+  return(comp_plot)
+}
+
+
+comp_metric_plot_baseline <- purrr::map2(.x = psychopathology_pls_grid_baseline,
+                                         .y = psychopathology_pls_param_baseline,
+                                         ~factor_metric_plot(grid_input= .x ,
+                                                             param_input = .y))
+
+comp_metric_plot_baseline
+```
+
+
+Followup
+
+```{r}
+
+
+## get the model grid
+psychopathology_pls_grid_followup  <- purrr::map(psychopathology_pls_fit_followup,"pls_grid")
+psychopathology_pls_param_followup  <- purrr::map(psychopathology_pls_fit_followup,"best_pls_model")
+
+comp_metric_plot_followup <- purrr::map2(.x = psychopathology_pls_grid_followup,
+                                         .y = psychopathology_pls_param_followup,
+                                         ~factor_metric_plot(grid_input= .x ,
+                                                             param_input = .y))
+
+comp_metric_plot_followup
+
+```
+
+
+# Feature importance for the whole data set
+
+##baseline
+
+Model across all sites. Combine the baseline train and baseline test of the first element of the list. It will cover all of the data.
+
+### Baseline component bar plot
+
+```{r,fig.width=10,fig.height=6}
+
+data_all_site_baseline <- rbind(psychopathology_baseline_train_select[[1]],
+                                psychopathology_baseline_test_select[[1]])
+
+### data are scaled in recipe
+all_data_recipe_baseline <- recipe_prep_scale(train_input=data_all_site_baseline)
+
+## follow the function use a more parsimonious model 
+  # Now find the least complex model that has no more than a 0.1% loss of RMSE:
+all_data_fit_baseline <- pls_tune(recipe_input = all_data_recipe_baseline)
+
+all_data_wf_baseline <- all_data_fit_baseline[["pls_final_wf"]]
+
+all_data_final_fit_baseline <- all_data_wf_baseline%>%
+    parsnip::extract_spec_parsnip()%>%
+    parsnip::fit(data = data_all_site_baseline, formula= as.formula("gfactor~."))
+
+tidy_all_data_final_fit_baseline <- all_data_final_fit_baseline%>% 
+  tidy()
+
+all_data_param_baseline <-all_data_fit_baseline[["best_pls_model"]][["num_comp"]]
+### extract the variance explained by each component(read the paper)
+
+var_explained <- all_data_final_fit_baseline[["fit"]][["prop_expl_var"]][["X"]]
+
+### plotting feature importance based on the model with all the data
+
+comp_idx_vec <- c(1:all_data_param_baseline)
+
+tidy_all_data_final_fit_baseline <- tidy_all_data_final_fit_baseline %>%
+                                    rename(feature_names = term)
+tidy_all_data_final_fit_baseline_with_name<- full_join(tidy_all_data_final_fit_baseline,
+                                                       plotting_names, by = "feature_names")%>%
+                                                filter(feature_names != "Y", # outcome variable col name
+                                                       )
+tidy_all_data_final_fit_baseline_list <- purrr::map(comp_idx_vec,
+                                                    ~filter(tidy_all_data_final_fit_baseline_with_name,
+                                                                         component == .)%>%
+                                                          dplyr::select(all_of(c("plotting_name","value"))))
+
+### get the variable order from the first component:
+
+tidy_all_data_final_fit_baseline_reordered <- tidy_all_data_final_fit_baseline_list[[1]] %>% 
+                                                                  arrange(value)
+
+tidy_all_data_final_fit_baseline_reordered<- tidy_all_data_final_fit_baseline_reordered$plotting_name
+
+pls_vi_plot_with_label <- function(data_input=tidy_all_data_final_fit_baseline_list[[1]],
+                                   var_input = var_explained[1],
+                                   idx_input = comp_idx_vec[1],
+                                   reorder_name = tidy_all_data_final_fit_baseline_reordered){
+  ### arrange the data with the character vector input
+  data_input <- data_input %>%
+                mutate(plotting_name = as.factor(plotting_name))%>%
+                  mutate(plotting_name = factor(plotting_name,
+                                                levels =reorder_name))
+  ### setting up the plot titles
+    range_value <- range(data_input$value)
+  var_title_long <- paste0("component ", idx_input," var explained ",round(var_input,3)*100,"%")
+ var_title_short <- paste0(round(var_input,3)*100,"%")
+  var_title_medium <- paste0("comp ", idx_input," \n ",round(var_input,3)*100,"%")
+
+  bar_plot <- ggplot(data_input, aes(x=.data[["value"]], y=plotting_name)) +
+  geom_bar(stat="identity")+
+  theme_classic() + 
+    scale_x_continuous(limits = c(round(range_value[1],2)-0.05, round(range_value[2],2)+0.05),
+                       breaks = c(round(range_value[1],2)-0.05,0, round(range_value[2],2)+0.05))+
+    labs(title = var_title_medium)+
+theme(
+  axis.title.x = element_blank(),
+  axis.text.x = element_text(size = 12,angle = 60,vjust = 0.5),
+  axis.title.y = element_blank(),
+  axis.text.y = element_text(size = 12),
+  legend.text = element_blank(),
+  plot.title = element_text(size=15))
+  return(bar_plot)
+}
+
+## get the component one plot
+comp_one_plot <- pls_vi_plot_with_label(data_input=tidy_all_data_final_fit_baseline_list[[1]],
+                                   var_input = var_explained[1],
+                                   idx_input = comp_idx_vec[1])
+
+
+
+pls_vi_plot_no_label <- function(data_input=tidy_all_data_final_fit_baseline_list[[2]],
+                                   var_input = var_explained[2],
+                                   idx_input = comp_idx_vec[2],
+                                 reorder_name = tidy_all_data_final_fit_baseline_reordered){
+  ### arrange the data with the character vector input
+  data_input <- data_input %>%
+                mutate(plotting_name = as.factor(plotting_name))%>%
+                  mutate(plotting_name = factor(plotting_name,
+                                                levels =reorder_name))
+    ### setting up the plot titles
+  range_value <- range(data_input$value)
+  
+  var_title_long <- paste0("component ", idx_input," var explained ",round(var_input,3)*100,"%")
+  var_title_short <- paste0(round(var_input,3)*100,"%")
+    var_title_medium <- paste0("comp ", idx_input," \n ",round(var_input,3)*100,"%")
+
+  bar_plot <- ggplot(data_input, aes(x=.data[["value"]], y=plotting_name)) +
+  geom_bar(stat="identity")+
+    scale_x_continuous(limits = c(round(range_value[1],2)-0.05, round(range_value[2],2)+0.05),
+                       breaks = c(round(range_value[1],2)-0.05,0, round(range_value[2],2)+0.05))+
+  theme_classic() + 
+    labs(title = var_title_medium)+
+theme(
+  axis.title.x = element_blank(),
+  axis.text.x = element_text(size = 12,angle = 60,vjust = 0.5),
+  axis.title.y = element_blank(),
+  axis.text.y = element_blank(),
+  legend.text = element_blank(),
+  plot.title = element_text(size=15),
+  axis.ticks = element_blank())
+  return(bar_plot)
+}
+
+
+comp_other_plots <- purrr::pmap(list(tidy_all_data_final_fit_baseline_list[2:all_data_param_baseline],
+                                     var_explained[2:all_data_param_baseline],
+                                     comp_idx_vec[2:all_data_param_baseline
+                                                  ]),~pls_vi_plot_no_label(data_input=..1,
+                                   var_input = ..2,
+                                   idx_input = ..3)) 
+comp_other_plots_combined <- ggpubr::ggarrange(plotlist=comp_other_plots, nrow =1,ncol = length(var_explained)-1)
+## combine the plots together with carefully specified ratios
+comp_plots_all <- gridExtra::grid.arrange(comp_one_plot,comp_other_plots_combined,nrow = 1, ncol = 2, widths = c(3.3, 4))
+
+comp_plots_all
+```
+
+
+### Compute correlation between features and gfactor for baseline
+
+#### Computing correlation plots across sites and plotting the bar plot for baseline
+
+The bar plot for correlations across all sites. Train and test fold are joined together.
+
+```{r,fig.height=7,fig.width=7}
+corr_data_all <- rbind(psychopathology_baseline_train[[1]],psychopathology_baseline_test[[1]])
+
+ corr_all_features <- purrr::map(.x = features,~cor(corr_data_all[[.x]],corr_data_all[["gfactor"]]))%>% 
+                                          do.call(rbind,.)%>% as.numeric()
+ 
+ corr_all_features_cor_test <- purrr::map(.x = features,
+                            ~cor.test(corr_data_all[[.x]],corr_data_all[["gfactor"]],method="pearson"))
+ 
+ corr_all_features_ci <- purrr::map(corr_all_features_cor_test,"conf.int")%>% 
+                                          do.call(rbind,.)%>% tibble::as_tibble()%>%
+                                          rename(low=V1,upp=V2)
+                                          
+   
+ 
+  corr_output_tibble <- tibble(feature_names = features,value = corr_all_features)
+corr_output_tibble <- cbind(corr_output_tibble,corr_all_features_ci)
+  
+  corr_baseline_all_sites_names <- full_join(corr_output_tibble,plotting_names, by = "feature_names")
+  
+  
+   corr_baseline_all_sites_names%>%
+ mutate(plotting_name = fct_reorder(plotting_name, value,.fun = "max"))%>%
+  ggplot(aes(x = plotting_name, y = value))+
+    geom_bar(stat = "identity",fill="gray30",alpha = 0.7)+
+    geom_errorbar( aes(x=plotting_name, 
+                   ymin=low, 
+                   ymax=upp),
+               width=0.4, colour="black", alpha=0.9, linewidth=1.3)+
+      coord_flip()+
+    theme_classic() + 
+  labs(y =paste0( "Correlation ") , x = "") +
+    theme(axis.title.x= element_text(size = 20),
+          axis.title.y= element_text(size = 20),
+          axis.text.y = element_text(size = 15),
+          axis.text.x = element_text(size = 20))
+```
+
+The plot without y-axis labels. Used in the aligned plot.
+
+```{r,fig.width=2,fig.height=6}
+## use the order of baseline feature importance to order the correlation plot
+## The order is the same with the magnitude of the univariate correlations
+corr_baseline_all_sites_names_for_all <-corr_baseline_all_sites_names%>%
+     mutate(plotting_name = as.factor(plotting_name))%>%
+                  mutate(plotting_name = factor(plotting_name,
+                                                levels =tidy_all_data_final_fit_baseline_reordered))
+  
+  
+corr_bar_plot_baseline <-   corr_baseline_all_sites_names_for_all%>%
+ #mutate(plotting_name = fct_reorder(plotting_name, value,.fun = "max"))%>%
+  ggplot(aes(x = plotting_name, y = value))+
+    geom_bar(stat = "identity",fill="gray40",alpha = 0.7)+
+    geom_errorbar( aes(x=plotting_name, 
+                   ymin=low, 
+                   ymax=upp),
+               width=0.4, colour="black", alpha=0.9, linewidth=1.3)+
+  scale_y_continuous(limits = c(-0.25, 0.25),
+                       breaks = c(-0.25,0, 0.25))+
+      coord_flip()+
+    theme_classic() + 
+    labs(title = "Univariate \ncorrelations")+
+theme(
+  axis.title.x = element_blank(),
+  axis.text.x = element_text(size = 12,angle = 60,vjust = 0.5),
+  axis.title.y = element_blank(),
+  axis.text.y = element_blank(),
+  legend.text = element_blank(),
+  plot.title = element_text(size=15),
+  axis.ticks = element_blank())
+
+```
+
+### join correlation plot with univariate together
+
+```{r,fig.width=10,fig.height=5}
+
+vi_pls_plot_baseline_all <-ggpubr::ggarrange(comp_plots_all,corr_bar_plot_baseline,nrow = 1, ncol = 2, widths = c(8, 1.4)) 
+vi_pls_plot_baseline_all
+```
+
+
+
+## Followup
+
+Use the same codes as baseline.
+
+
+```{r,fig.width=8,fig.height=6}
+
+data_all_site_followup <- rbind(psychopathology_followup_train_select[[1]],
+                                psychopathology_followup_test_select[[1]])
+
+all_data_recipe_followup <- recipe_prep_scale(train_input=data_all_site_followup)
+
+## follow the function use a more parsimonious model 
+## cut at the number of component that does not reduce 0.1% of the RMSE
+all_data_fit_followup <- pls_tune(recipe_input = all_data_recipe_followup)
+
+all_data_wf_followup <- all_data_fit_followup[["pls_final_wf"]]
+
+all_data_final_fit_followup <- all_data_wf_followup%>%
+    parsnip::extract_spec_parsnip()%>%
+    parsnip::fit(data = data_all_site_followup, formula= as.formula("gfactor~."))
+
+tidy_all_data_final_fit_followup <- all_data_final_fit_followup%>% 
+  tidy()
+
+all_data_param_followup <-all_data_fit_followup[["best_pls_model"]][["num_comp"]]
+### extract the variance explained by each component
+
+var_explained_followup <- all_data_final_fit_followup[["fit"]][["prop_expl_var"]][["X"]]
+
+### plotting feature importance based on the model with all the data
+
+comp_idx_vec_followup <- c(1:all_data_param_followup)
+
+tidy_all_data_final_fit_followup <- tidy_all_data_final_fit_followup %>%
+                                    rename(feature_names = term)
+tidy_all_data_final_fit_followup_with_name<- full_join(tidy_all_data_final_fit_followup,
+                                                       plotting_names, by = "feature_names")%>%
+                                                filter(feature_names != "Y", # outcome variable col name
+                                                       )
+tidy_all_data_final_fit_followup_list <- purrr::map(comp_idx_vec_followup,
+                                                    ~filter(tidy_all_data_final_fit_followup_with_name,
+                                                                         component == .)%>%
+                                                          dplyr::select(all_of(c("plotting_name","value"))))
+
+### get the variable order from the first component:
+
+tidy_all_data_final_fit_followup_reordered <- tidy_all_data_final_fit_followup_list[[1]] %>% 
+                                                                  arrange(value)
+
+tidy_all_data_final_fit_followup_reordered<- tidy_all_data_final_fit_followup_reordered$plotting_name
+
+
+comp_one_plot_followup <- pls_vi_plot_with_label(data_input=tidy_all_data_final_fit_followup_list[[1]],
+                                   var_input = var_explained_followup[1],
+                                   idx_input = comp_idx_vec_followup[1],
+                                   reorder_name=tidy_all_data_final_fit_followup_reordered)
+
+
+comp_other_plots_followup <- purrr::pmap(list(tidy_all_data_final_fit_followup_list[2:all_data_param_followup],
+                                     var_explained_followup[2:all_data_param_followup],
+                                     comp_idx_vec_followup[2:all_data_param_followup]
+                                     ),~pls_vi_plot_no_label(data_input=..1,
+                                   var_input = ..2,
+                                   idx_input = ..3,
+                                   reorder_name=tidy_all_data_final_fit_followup_reordered)) 
+comp_other_plots_combined_followup <- ggpubr::ggarrange(plotlist=comp_other_plots_followup,
+                                                        nrow =1,ncol = length(var_explained_followup)-1)
+
+comp_plots_all_followup <- gridExtra::grid.arrange(comp_one_plot_followup,
+                                                   comp_other_plots_combined_followup,
+                                                   nrow = 1, ncol = 2, widths = c(3.3, 4))
+
+comp_plots_all_followup
+```
+
+
+### plotting univariate correlation plots across sites at followup
+
+
+The bar plot for correlations across all sites. Train and test fold are joined together.
+
+```{r,fig.height=7,fig.width=7}
+corr_data_all_followup <- rbind(psychopathology_followup_train[[1]],psychopathology_followup_test[[1]])
+
+ corr_all_features_followup <- purrr::map(.x = features,~cor(corr_data_all_followup[[.x]],
+                                                             corr_data_all_followup[["gfactor"]]))%>% 
+                                          do.call(rbind,.)%>% as.numeric()
+ 
+ corr_all_features_cor_test_followup <- purrr::map(.x = features,
+                            ~cor.test(corr_data_all_followup[[.x]],
+                                      corr_data_all_followup[["gfactor"]],method="pearson"))
+ 
+ corr_all_features_ci_followup <- purrr::map(corr_all_features_cor_test_followup,"conf.int")%>% 
+                                          do.call(rbind,.)%>% tibble::as_tibble()%>%
+                                          rename(low=V1,upp=V2)
+                                          
+   
+ 
+corr_output_tibble_followup <- tibble(feature_names = features,value = corr_all_features_followup)
+corr_output_tibble_followup <- cbind(corr_output_tibble_followup,corr_all_features_ci_followup)
+  
+  corr_followup_all_sites_names <- full_join(corr_output_tibble_followup,
+                                                      plotting_names, by = "feature_names")
+  
+  
+   corr_followup_all_sites_names%>%
+ mutate(plotting_name = fct_reorder(plotting_name, value,.fun = "max"))%>%
+  ggplot(aes(x = plotting_name, y = value))+
+    geom_bar(stat = "identity",fill="gray30",alpha = 0.7)+
+    geom_errorbar( aes(x=plotting_name, 
+                   ymin=low, 
+                   ymax=upp),
+               width=0.4, colour="black", alpha=0.9, linewidth=1.3)+
+      coord_flip()+
+    theme_classic() + 
+  labs(y =paste0( "Correlation ") , x = "") +
+    theme(axis.title.x= element_text(size = 20),
+          axis.title.y= element_text(size = 20),
+          axis.text.y = element_text(size = 15),
+          axis.text.x = element_text(size = 20))
+```
+
+
+```{r,fig.height=5}
+
+corr_followup_all_sites_names_for_all <-corr_followup_all_sites_names%>%
+     mutate(plotting_name = as.factor(plotting_name))%>%
+                  mutate(plotting_name = factor(plotting_name,
+                                                levels =tidy_all_data_final_fit_followup_reordered))
+  
+  
+corr_bar_plot_followup <-   corr_followup_all_sites_names_for_all%>%
+ #mutate(plotting_name = fct_reorder(plotting_name, value,.fun = "max"))%>%
+  ggplot(aes(x = plotting_name, y = value))+
+    geom_bar(stat = "identity",fill="gray40",alpha = 0.7)+
+    geom_errorbar( aes(x=plotting_name, 
+                   ymin=low, 
+                   ymax=upp),
+               width=0.4, colour="black", alpha=0.9, linewidth=1.3)+
+  scale_y_continuous(limits = c(-0.25, 0.25),
+         breaks = c(-0.25,0, 0.25))+##use this because all the plots should have the same height
+      coord_flip()+
+    theme_classic() + 
+    labs(title = "Univariate \ncorrelations")+
+theme(
+  axis.title.x = element_blank(),
+  axis.text.x = element_text(size = 12,angle = 60,vjust = 0.5),
+  axis.title.y = element_blank(),
+  axis.text.y = element_blank(),
+  legend.text = element_blank(),
+  plot.title = element_text(size=15),
+  axis.ticks = element_blank())
+
+```
+
+## join correlation plot with univariate together
+
+```{r,fig.width=10,fig.height=5}
+
+vi_pls_plot_followup_all <-ggpubr::ggarrange(comp_plots_all_followup,
+                                                   corr_bar_plot_followup,
+                                                   nrow = 1, ncol = 2, widths = c(8, 1.4)) 
+vi_pls_plot_followup_all
+```
+
+Process the feature importance plots: align the baseline and followup plot together.
+
+```{r,fig.width=10,fig.height=12}
+
+vi_pls_plot_baseline_label <- vi_pls_plot_baseline_all %>%
+                            ggpubr::annotate_figure(top = ggpubr::text_grob("Baseline",size=20,hjust=2.5))
+
+
+vi_pls_plot_followup_label <- vi_pls_plot_followup_all %>%
+                            ggpubr::annotate_figure(top = ggpubr::text_grob("Followup",size=20,hjust=2.5))
+
+
+
+vi_pls_plot_label <- ggpubr::ggarrange(vi_pls_plot_baseline_label,vi_pls_plot_followup_label,nrow = 2)
+
+title_vi_pls_plot <- ggpubr::annotate_figure(vi_pls_plot_label,
+                        top = ggpubr::text_grob("Feature importance of Partial Least Squares Regressions \nPredicting Cognitive Abilities from Mental Health Variables",size=25, face = "bold")) 
+
+title_vi_pls_plot
+
+
+
+
+```
+
+## save the output
+
+```{r}
+output_list <- list(baseline_train_pred = psychopathology_pls_pred_baseline_results_train,
+                    baseline_test_pred = psychopathology_pls_pred_baseline_results,
+                    baseline_train_data = psychopathology_baseline_train,
+                    baseline_test_data = psychopathology_baseline_test,
+                    followup_train_pred = psychopathology_pls_pred_followup_results_train,
+                    followup_test_pred = psychopathology_pls_pred_followup_results,
+                    followup_train_data =psychopathology_followup_train ,
+                    followup_test_data = psychopathology_followup_test)
+
+```
+
+```{r}
+
+saveRDS(output_list,paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/psychopathology_pls_pred_2.0', '.RData'))
+
+```
+
+# The performance of all three modalities individually: ASR, CBCL and personality
+
+## Parent Mental Health (ASR)
+
+### extract the data.
+
+```{r}
+parents_baseline_train_select <- purrr::map(.x = psychopathology_baseline_train_select,
+                                     ~dplyr::select(.,all_of(c(Parent_Mental_Health_names,"gfactor"))))
+parents_baseline_test_select <- purrr::map(.x = psychopathology_baseline_test_select,
+                                     ~dplyr::select(.,all_of(c(Parent_Mental_Health_names,"gfactor")))) 
+parents_followup_train_select <- purrr::map(.x = psychopathology_followup_train_select,
+                                     ~dplyr::select(.,all_of(c(Parent_Mental_Health_names,"gfactor"))))
+parents_followup_test_select <- purrr::map(.x = psychopathology_followup_test_select,
+                                     ~dplyr::select(.,all_of(c(Parent_Mental_Health_names,"gfactor")))) 
+```
+
+### Model fitting
+
+```{r}
+
+### fit the enet model
+### baseline
+parents_baseline_recipe_list <- purrr::map(.x = parents_baseline_train_select,
+                             ~recipe_prep(train_input=.x,features_input = Parent_Mental_Health_names)) 
+
+parents_pls_fit_baseline <- parents_baseline_recipe_list %>% 
+                          purrr::map(.,~pls_tune(recipe_input = .,feature_input = Parent_Mental_Health_names)) 
+
+parents_pls_fit_wf <- purrr::map(parents_pls_fit_baseline,"pls_final_wf")
+
+
+parents_pls_pred_baseline <- purrr::pmap(list(parents_baseline_recipe_list,
+                                        parents_pls_fit_wf,
+                                        parents_baseline_test_select),~
+                                                 model_final_fit(recipe_input = ..1, 
+                                    wf_input = ..2,
+                                    test_data = ..3)) 
+
+
+
+
+
+parents_pls_pred_baseline_results <- purrr::map(parents_pls_pred_baseline,"model_predict")
+
+
+parents_pls_pred_baseline_train <- purrr::pmap(list(parents_baseline_recipe_list,
+                                                         parents_pls_fit_wf,
+                                                         parents_baseline_train_select),~
+                                                 model_final_fit(recipe_input = ..1, 
+                                    wf_input = ..2,
+                                    test_data = ..3)) 
+
+parents_pls_pred_baseline_results_train <- purrr::map(parents_pls_pred_baseline_train,"model_predict")
+
+parents_baseline_metric <- purrr::map2(.x=parents_pls_pred_baseline_results,
+     .y=psychopathology_baseline_test,
+     ~metric_compute_site(data_input =.x ,
+                    site_input = .y)) %>%
+                      do.call(rbind,.)
+
+      parents_baseline_metric%>% 
+    kableExtra::kbl(caption = "metrics for all sites in baseline") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+
+parents_baseline_metric_avg <- average_metric_one_mod(metric_list =parents_baseline_metric)
+
+parents_baseline_metric_avg_table <- parents_baseline_metric_avg %>%
+  mutate_if(is.numeric, round, digits=3)%>%
+  mutate("correlation (sd)" = paste0(correlation," (",cor_sd,")"))%>%
+  mutate("tradrsq (sd)" = paste0(tradrsq," (",rsq_sd,")"))%>%
+  mutate("MAE (sd)" = paste0(MAE," (",mae_sd,")"))%>%
+  mutate("RMSE (sd)" = paste0(RMSE," (",rmse_sd,")"))%>%
+  select_if(is.character)
+  
+  parents_baseline_metric_avg_table%>%
+    dplyr::select(all_of(avg_table_var_names))%>%
+    kableExtra::kbl(caption = paste0("metrics for modalities averaged across sites in baseline")) %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+```
+
+```{r}
+
+### fit the enet model
+### followup
+parents_followup_recipe_list <- purrr::map(.x=parents_followup_train_select,
+                                    ~recipe_prep(train_input=.x,
+                                                 features_input = Parent_Mental_Health_names)) 
+
+parents_pls_fit_followup <- parents_followup_recipe_list %>%
+                           purrr::map(.,~pls_tune(recipe_input = .,feature_input = Parent_Mental_Health_names))
+
+parents_pls_fit_wf_followup <- purrr::map(parents_pls_fit_followup,"pls_final_wf")
+
+
+parents_pls_pred_followup <- purrr::pmap(list(parents_followup_recipe_list,
+                                                         parents_pls_fit_wf_followup,
+                                                         parents_followup_test_select),~
+                                                 model_final_fit(recipe_input = ..1, 
+                                    wf_input = ..2,
+                                    test_data = ..3)) 
+
+parents_pls_pred_followup_results <- purrr::map(parents_pls_pred_followup,"model_predict")
+
+
+parents_pls_pred_followup_train <- purrr::pmap(list(parents_followup_recipe_list,
+                                                         parents_pls_fit_wf_followup,
+                                                         parents_followup_train_select),~
+                                                 model_final_fit(recipe_input = ..1, 
+                                    wf_input = ..2,
+                                    test_data = ..3)) 
+
+parents_pls_pred_followup_results_train <- purrr::map(parents_pls_pred_followup_train,"model_predict")
+
+
+parents_followup_metric <- purrr::map2(.x=parents_pls_pred_followup_results,
+     .y=psychopathology_followup_test,~metric_compute_site(data_input =.x ,
+                                           site_input = .y)) %>%
+                      do.call(rbind,.)
+
+      parents_followup_metric%>% 
+    kableExtra::kbl(caption = "metrics for all sites in followup") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+
+parents_followup_metric_avg <- average_metric_one_mod(metric_list =parents_followup_metric)
+
+parents_followup_metric_avg_table <- parents_followup_metric_avg %>%
+  mutate_if(is.numeric, round, digits=3)%>%
+  mutate("correlation (sd)" = paste0(correlation," (",cor_sd,")"))%>%
+  mutate("tradrsq (sd)" = paste0(tradrsq," (",rsq_sd,")"))%>%
+  mutate("MAE (sd)" = paste0(MAE," (",mae_sd,")"))%>%
+  mutate("RMSE (sd)" = paste0(RMSE," (",rmse_sd,")"))%>%
+  select_if(is.character)
+  
+  parents_followup_metric_avg_table%>%
+    dplyr::select(all_of(avg_table_var_names))%>%
+    kableExtra::kbl(caption = paste0("metrics for modalities averaged across sites in followup")) %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+```
+
+## CBCL sum scores
+
+### extract the data
+
+```{r}
+CBCL_baseline_train_select <- purrr::map(.x = psychopathology_baseline_train_select,
+                                     ~dplyr::select(.,all_of(c(CBCL_sum_scores_names,"gfactor"))))
+CBCL_baseline_test_select <- purrr::map(.x = psychopathology_baseline_test_select,
+                                     ~dplyr::select(.,all_of(c(CBCL_sum_scores_names,"gfactor")))) 
+CBCL_followup_train_select <- purrr::map(.x = psychopathology_followup_train_select,
+                                     ~dplyr::select(.,all_of(c(CBCL_sum_scores_names,"gfactor"))))
+CBCL_followup_test_select <- purrr::map(.x = psychopathology_followup_test_select,
+                                     ~dplyr::select(.,all_of(c(CBCL_sum_scores_names,"gfactor")))) 
+```
+
+### model fitting
+
+```{r}
+
+### fit the enet model
+### baseline
+CBCL_baseline_recipe_list <- purrr::map(.x = CBCL_baseline_train_select,
+                             ~recipe_prep(train_input=.x,features_input = CBCL_sum_scores_names)) 
+
+CBCL_pls_fit_baseline <- CBCL_baseline_recipe_list%>%
+                purrr::map(.,~pls_tune(recipe_input = .,feature_input = CBCL_sum_scores_names))
+
+CBCL_pls_fit_wf <-  purrr::map(CBCL_pls_fit_baseline,"pls_final_wf")
+
+
+CBCL_pls_pred_baseline <- purrr::pmap(list(CBCL_baseline_recipe_list,
+                                        CBCL_pls_fit_wf,
+                                        CBCL_baseline_test_select),~
+                                                 model_final_fit(recipe_input = ..1, 
+                                    wf_input = ..2,
+                                    test_data = ..3)) 
+
+
+
+
+
+CBCL_pls_pred_baseline_results <- purrr::map(CBCL_pls_pred_baseline,"model_predict")
+
+
+CBCL_pls_pred_baseline_train <- purrr::pmap(list(CBCL_baseline_recipe_list,
+                                                         CBCL_pls_fit_wf,
+                                                         CBCL_baseline_train_select),~
+                                                 model_final_fit(recipe_input = ..1, 
+                                    wf_input = ..2,
+                                    test_data = ..3)) 
+
+CBCL_pls_pred_baseline_results_train <- purrr::map(CBCL_pls_pred_baseline_train,"model_predict")
+
+CBCL_baseline_metric <- purrr::map2(.x=CBCL_pls_pred_baseline_results,
+     .y=psychopathology_baseline_test,~metric_compute_site(data_input =.x ,
+                                           site_input = .y)) %>%
+                      do.call(rbind,.)
+
+      CBCL_baseline_metric%>% 
+    kableExtra::kbl(caption = "metrics for all sites in baseline") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+
+CBCL_baseline_metric_avg <- average_metric_one_mod(metric_list =CBCL_baseline_metric)
+
+CBCL_baseline_metric_avg_table <- CBCL_baseline_metric_avg %>%
+  mutate_if(is.numeric, round, digits=3)%>%
+  mutate("correlation (sd)" = paste0(correlation," (",cor_sd,")"))%>%
+  mutate("tradrsq (sd)" = paste0(tradrsq," (",rsq_sd,")"))%>%
+  mutate("MAE (sd)" = paste0(MAE," (",mae_sd,")"))%>%
+  mutate("RMSE (sd)" = paste0(RMSE," (",rmse_sd,")"))%>%
+  select_if(is.character)
+  
+  CBCL_baseline_metric_avg_table%>%
+    dplyr::select(all_of(avg_table_var_names))%>%
+    kableExtra::kbl(caption = paste0("metrics for modalities averaged across sites in baseline")) %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+```
+
+
+
+```{r}
+
+### fit the enet model
+### followup
+CBCL_followup_recipe_list <- purrr::map(.x=CBCL_followup_train_select,
+                                        ~recipe_prep(train_input=.x,features_input = CBCL_sum_scores_names)) 
+
+CBCL_pls_fit_followup <- CBCL_followup_recipe_list %>%
+                purrr::map(.,~pls_tune(recipe_input = .,feature_input = CBCL_sum_scores_names))
+
+CBCL_pls_fit_wf_followup <- purrr::map(CBCL_pls_fit_followup,"pls_final_wf")
+
+
+CBCL_pls_pred_followup <- purrr::pmap(list(CBCL_followup_recipe_list,
+                                                         CBCL_pls_fit_wf_followup,
+                                                         CBCL_followup_test_select),~
+                                                 model_final_fit(recipe_input = ..1, 
+                                    wf_input = ..2,
+                                    test_data = ..3)) 
+
+CBCL_pls_pred_followup_results <- purrr::map(CBCL_pls_pred_followup,"model_predict")
+
+
+CBCL_pls_pred_followup_train <- purrr::pmap(list(CBCL_followup_recipe_list,
+                                                         CBCL_pls_fit_wf_followup,
+                                                         CBCL_followup_train_select),~
+                                                 model_final_fit(recipe_input = ..1, 
+                                    wf_input = ..2,
+                                    test_data = ..3)) 
+
+CBCL_pls_pred_followup_results_train <-purrr::map(CBCL_pls_pred_followup_train,"model_predict")
+
+
+CBCL_followup_metric <- purrr::map2(.x=CBCL_pls_pred_followup_results,
+     .y=psychopathology_followup_test,~metric_compute_site(data_input =.x ,
+                                           site_input = .y)) %>%
+                      do.call(rbind,.)
+
+      CBCL_followup_metric%>% 
+    kableExtra::kbl(caption = "metrics for all sites in followup") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+
+CBCL_followup_metric_avg <- average_metric_one_mod(metric_list =CBCL_followup_metric)
+
+CBCL_followup_metric_avg_table <- CBCL_followup_metric_avg %>%
+  mutate_if(is.numeric, round, digits=3)%>%
+  mutate("correlation (sd)" = paste0(correlation," (",cor_sd,")"))%>%
+  mutate("tradrsq (sd)" = paste0(tradrsq," (",rsq_sd,")"))%>%
+  mutate("MAE (sd)" = paste0(MAE," (",mae_sd,")"))%>%
+  mutate("RMSE (sd)" = paste0(RMSE," (",rmse_sd,")"))%>%
+  select_if(is.character)
+  
+  CBCL_followup_metric_avg_table%>%
+    dplyr::select(all_of(avg_table_var_names))%>%
+    kableExtra::kbl(caption = paste0("metrics for modalities averaged across sites in followup")) %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+```
+
+
+
+## Child Personality(9):
+
+### extract the data
+
+```{r}
+child_baseline_train_select <- purrr::map(.x = psychopathology_baseline_train_select,
+                                     ~dplyr::select(.,all_of(c( Child_Personality_names,"gfactor"))))
+child_baseline_test_select <- purrr::map(.x = psychopathology_baseline_test_select,
+                                     ~dplyr::select(.,all_of(c( Child_Personality_names,"gfactor")))) 
+child_followup_train_select <- purrr::map(.x = psychopathology_followup_train_select,
+                                     ~dplyr::select(.,all_of(c( Child_Personality_names,"gfactor"))))
+child_followup_test_select <- purrr::map(.x = psychopathology_followup_test_select,
+                                     ~dplyr::select(.,all_of(c( Child_Personality_names,"gfactor")))) 
+```
+
+
+### model fitting
+
+```{r}
+
+### fit the enet model
+### baseline
+child_baseline_recipe_list <- purrr::map(.x = child_baseline_train_select,
+                             ~recipe_prep(train_input=.x,features_input = Child_Personality_names)) 
+
+child_pls_fit_baseline <- child_baseline_recipe_list %>%
+                purrr::map(.,~pls_tune(recipe_input = .,feature_input = Child_Personality_names))
+
+child_pls_fit_wf <- purrr::map(child_pls_fit_baseline,"pls_final_wf")
+
+
+child_pls_pred_baseline <- purrr::pmap(list(child_baseline_recipe_list,
+                                        child_pls_fit_wf,
+                                        child_baseline_test_select),~
+                                                 model_final_fit(recipe_input = ..1, 
+                                    wf_input = ..2,
+                                    test_data = ..3)) 
+
+
+
+
+
+child_pls_pred_baseline_results <- purrr::map(child_pls_pred_baseline,"model_predict")
+
+
+child_pls_pred_baseline_train <- pmap(list(child_baseline_recipe_list,
+                                                         child_pls_fit_wf,
+                                                         child_baseline_train_select),~
+                                                 model_final_fit(recipe_input = ..1, 
+                                    wf_input = ..2,
+                                    test_data = ..3)) 
+
+child_pls_pred_baseline_results_train <- purrr::map(child_pls_pred_baseline_train,"model_predict")
+
+child_baseline_metric <- map2(.x=child_pls_pred_baseline_results,
+     .y=psychopathology_baseline_test,~metric_compute_site(data_input =.x ,
+                                           site_input = .y)) %>%
+                      do.call(rbind,.)
+
+      child_baseline_metric%>% 
+    kableExtra::kbl(caption = "metrics for all sites in baseline") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+
+child_baseline_metric_avg <- average_metric_one_mod(metric_list =child_baseline_metric)
+
+child_baseline_metric_avg_table <- child_baseline_metric_avg %>%
+  mutate_if(is.numeric, round, digits=3)%>%
+  mutate("correlation (sd)" = paste0(correlation," (",cor_sd,")"))%>%
+  mutate("tradrsq (sd)" = paste0(tradrsq," (",rsq_sd,")"))%>%
+  mutate("MAE (sd)" = paste0(MAE," (",mae_sd,")"))%>%
+  mutate("RMSE (sd)" = paste0(RMSE," (",rmse_sd,")"))%>%
+  select_if(is.character)
+  
+  child_baseline_metric_avg_table%>%
+    dplyr::select(all_of(avg_table_var_names))%>%
+    kableExtra::kbl(caption = paste0("metrics for modalities averaged across sites in baseline")) %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+```
+
+
+```{r}
+
+### fit the enet model
+### followup
+child_followup_recipe_list <- purrr::map(.x=child_followup_train_select,~recipe_prep(train_input=.x,
+                                                              features_input = Child_Personality_names)) 
+
+child_pls_fit_followup <- child_followup_recipe_list %>%                
+              purrr::map(.,~pls_tune(recipe_input = .,feature_input = Child_Personality_names))
+
+child_pls_fit_wf_followup <- purrr::map(child_pls_fit_followup,"pls_final_wf")
+
+
+child_pls_pred_followup <- pmap(list(child_followup_recipe_list,
+                                                         child_pls_fit_wf_followup,
+                                                         child_followup_test_select),~
+                                                 model_final_fit(recipe_input = ..1, 
+                                    wf_input = ..2,
+                                    test_data = ..3)) 
+
+child_pls_pred_followup_results <- purrr::map(child_pls_pred_followup,"model_predict")
+
+
+child_pls_pred_followup_train <- pmap(list(child_followup_recipe_list,
+                                                         child_pls_fit_wf_followup,
+                                                         child_followup_train_select),~
+                                                 model_final_fit(recipe_input = ..1, 
+                                    wf_input = ..2,
+                                    test_data = ..3)) 
+
+child_pls_pred_followup_results_train <- purrr::map(child_pls_pred_followup_train,"model_predict")
+
+
+child_followup_metric <- map2(.x=child_pls_pred_followup_results,
+     .y=psychopathology_followup_test,~metric_compute_site(data_input =.x ,
+                                           site_input = .y)) %>%
+                      do.call(rbind,.)
+
+      child_followup_metric%>% 
+    kableExtra::kbl(caption = "metrics for all sites in followup") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+
+child_followup_metric_avg <- average_metric_one_mod(metric_list =child_followup_metric)
+
+child_followup_metric_avg_table <- child_followup_metric_avg %>%
+  mutate_if(is.numeric, round, digits=3)%>%
+  mutate("correlation (sd)" = paste0(correlation," (",cor_sd,")"))%>%
+  mutate("tradrsq (sd)" = paste0(tradrsq," (",rsq_sd,")"))%>%
+  mutate("MAE (sd)" = paste0(MAE," (",mae_sd,")"))%>%
+  mutate("RMSE (sd)" = paste0(RMSE," (",rmse_sd,")"))%>%
+  select_if(is.character)
+  
+  child_followup_metric_avg_table%>%
+    dplyr::select(all_of(avg_table_var_names))%>%
+    kableExtra::kbl(caption = paste0("metrics for modalities averaged across sites in followup")) %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+```
+
+# Scatterplots
+
+
+Join the predicted values of three different sets of featues of mental health together.
+
+## combine all the needed data-sets
+
+```{r}
+psy_seperate_baseline <- list(parents=parents_pls_pred_baseline_results %>% do.call(rbind,.),
+                              CBCL=CBCL_pls_pred_baseline_results%>% do.call(rbind,.),
+                              child=child_pls_pred_baseline_results%>% do.call(rbind,.))
+
+psy_seperate_followup <- list(parents=parents_pls_pred_followup_results %>% do.call(rbind,.),
+                              CBCL=CBCL_pls_pred_followup_results%>% do.call(rbind,.),
+                              child=child_pls_pred_followup_results%>% do.call(rbind,.))
+
+
+baseline_corr_string_vec <- c(parents_baseline_metric_avg_table$`correlation (sd)`,
+                              CBCL_baseline_metric_avg_table$`correlation (sd)`,
+                              child_baseline_metric_avg_table$`correlation (sd)`)
+
+followup_corr_string_vec <- c(parents_followup_metric_avg_table$`correlation (sd)`,
+                              CBCL_followup_metric_avg_table$`correlation (sd)`,
+                              child_followup_metric_avg_table$`correlation (sd)`)
+
+plotting_titles <- c("ASR","CBCL", "Child Personality")
+```
+
+## Plotting
+
+```{r,fig.width=8,fig.height=4}
+
+psy_seperate_plot_baseline <- pmap(list( psy_seperate_baseline,plotting_titles,baseline_corr_string_vec),
+                                   ~scatter_plot_gfactor_string(data_input=..1,
+                                                         name_input=..2,
+                                                         corr_string_input = ..3))
+
+title_baseline <- ggdraw() + 
+  draw_label(
+    "Baseline",
+    fontface = 'bold',
+    x = 0,
+    hjust = 0
+  ) +
+  theme(
+    # add margin on the left of the drawing canvas,
+    # so title is aligned with left edge of first plot
+    plot.margin = margin(0, 0, 0, 7)
+  )
+
+psy_seperate_plot_baseline_grid <- cowplot::plot_grid(title_baseline,
+                                  cowplot::plot_grid(plotlist = psy_seperate_plot_baseline,nrow = 1,ncol = 3),
+                                       nrow = 2 , 
+                                       rel_heights = c(0.1, 1))
+
+title_scatter_plot_all <- ggdraw() + 
+  draw_label(
+    "Out-of-Sample Predictive Ability",
+    fontface = 'bold',
+    x = 0,
+    hjust = 0
+  ) +
+  theme(
+    # add margin on the left of the drawing canvas,
+    # so title is aligned with left edge of first plot
+    plot.margin = margin(0, 0, 0, 7)
+  )
+
+labelled_scatter_baseline <- ggpubr::annotate_figure(psy_seperate_plot_baseline_grid,
+                          left= ggpubr::text_grob("Observed Cognitive Performance (Z)",size=15,rot=90),
+                        bottom = ggpubr::text_grob("Predicted Cognitive Performance (Z)",size=15)) 
+
+cowplot::plot_grid(title_scatter_plot_all,labelled_scatter_baseline,
+                                       nrow = 2 , 
+                                       rel_heights = c(0.1, 1))
+```
+
+```{r,fig.width=8,fig.height=4}
+
+psy_seperate_plot_followup <- pmap(list( psy_seperate_followup, plotting_titles,followup_corr_string_vec),
+                                   ~scatter_plot_gfactor_string(data_input=..1,
+                                                         name_input=..2,
+                                                         corr_string_input = ..3))
+
+title_followup <- ggdraw() + 
+  draw_label(
+    "Followup",
+    fontface = 'bold',
+    x = 0,
+    hjust = 0
+  ) +
+  theme(
+    # add margin on the left of the drawing canvas,
+    # so title is aligned with left edge of first plot
+    plot.margin = margin(0, 0, 0, 7)
+  )
+
+psy_seperate_plot_followup_grid <- cowplot::plot_grid(title_followup,
+                              cowplot::plot_grid(plotlist = psy_seperate_plot_followup,nrow = 1,ncol = 3),
+                                       nrow = 2 , 
+                                       rel_heights = c(0.1, 1))
+
+labelled_scatter_followup <- ggpubr::annotate_figure(psy_seperate_plot_followup_grid,
+                          left= ggpubr::text_grob("Observed Cognitive Performance (Z)",size=15,rot=90),
+                        bottom = ggpubr::text_grob("Predicted Cognitive Performance (Z)",size=15)) 
+
+cowplot::plot_grid(title_scatter_plot_all,labelled_scatter_followup,
+                                       nrow = 2 , 
+                                       rel_heights = c(0.1, 1))
+```
+
+# Save the outputs
+
+save the metrics performances
+
+```{r}
+
+psychopathology_baseline_metric_output_table <- psychopathology_baseline_metric_avg_table %>% 
+                                                mutate(modality = "Mental Health")
+psychopathology_followup_metric_output_table <- psychopathology_followup_metric_avg_table %>% 
+                                                mutate(modality = "Mental Health")
+
+
+parents_baseline_metric_output_table <- parents_baseline_metric_avg_table %>% 
+                                                mutate(modality = "ASR")
+parents_followup_metric_output_table <- parents_followup_metric_avg_table %>% 
+                                                mutate(modality = "ASR")
+
+CBCL_baseline_metric_output_table <- CBCL_baseline_metric_avg_table %>% 
+                                                mutate(modality = "CBCL")
+CBCL_followup_metric_output_table<- CBCL_followup_metric_avg_table %>% 
+                                                mutate(modality = "CBCL")
+
+child_baseline_metric_output_table<- child_baseline_metric_avg_table %>% 
+                                                mutate(modality = "Child personality")
+child_followup_metric_output_table<- child_followup_metric_avg_table %>% 
+                                                mutate(modality = "Child personality")
+
+baseline_output_table <- bind_rows(psychopathology_baseline_metric_output_table,
+                                   CBCL_baseline_metric_output_table,
+                                   parents_baseline_metric_output_table,
+                                   child_baseline_metric_output_table) %>%
+                        mutate(event = "baseline")
+
+
+followup_output_table <- bind_rows(psychopathology_followup_metric_output_table,
+                                   CBCL_followup_metric_output_table,
+                                   parents_followup_metric_output_table,
+                                   child_followup_metric_output_table) %>%
+                        mutate(event = "followup")
+
+
+output_table <- bind_rows(baseline_output_table,followup_output_table)
+
+```
+
+
+```{r,eval=FALSE}
+
+saveRDS(output_table,paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/performance_metrics/mental_health_performance_metric', '.RData'))
+
+```
+
+save the scatterplot list
+
+
+```{r,eval=FALSE}
+
+saveRDS(psy_seperate_plot_baseline,paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/scatter_plots/psy_seperate_plot_baseline', '.RData'))
+saveRDS(psy_seperate_plot_followup,paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/scatter_plots/psy_seperate_plot_followup', '.RData'))
+```

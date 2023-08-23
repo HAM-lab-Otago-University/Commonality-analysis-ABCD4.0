@@ -1,0 +1,2295 @@
+---
+title: "PLS Model Fitting of Cognitive Abilities ~ Soc-Dem-Life-Dev for baseline and follow-up"
+author: "Yue Wang, Narun Pat"
+date:  "`r format(Sys.time(), '%d %b, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    number_sections: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+options(scipen = 999)
+```
+
+# Set the working environment
+
+## Reset workspace and load libraries  
+This analysis uses ABCD Release 4.0.
+
+This script is modified based on the social economics status and developmental analysis with elastic net version 2.0.
+
+```{r , results='hide', message=FALSE, warning=FALSE}
+rm(list=ls())
+gc()
+```
+
+```{r , results='hide', message=FALSE, warning=FALSE}
+library(tidyverse)
+library(qgraph)
+library(pander)
+library(summarytools)
+library(sjPlot)
+library(sjmisc)
+library(sjlabelled)
+library(tidymodels)
+library(knitr)
+library(extrafont)
+## for poisson class of elastic net
+library(poissonreg)
+library("sva")
+### plotting libraries
+library(ggtext)
+library(ggpubr)
+library(cowplot)
+library(ggthemes)
+### package for pls analysis (all packages are necessary for the model to run)
+library("pls")
+library("mixOmics")
+library(plsmod)
+
+```
+
+
+## Setting up paths
+
+Using ABCD 4.0 
+
+```{r, cache=FALSE, include=FALSE}
+
+#ABCD3Fold <- '/Volumes/wd/ABCD3/'
+#ABCD3Fold <-"~/OneDrive - University of Otago/ABCD3/"
+
+#ABCD4Fold <-"/media/Data/ABCD/ABCD4/"
+ABCD4Fold <-"/Volumes/Data/ABCD/ABCD4/"
+
+
+#ABCD4Fold <- "//np-qnapa/Data/ABCD/ABCD4/"
+#setwd(paste0(ABCD3Fold, "Analysis/CognitionP"))
+dataFold <- paste0(ABCD4Fold, "ABCD4SQL/")
+
+#ABCD3Fold <-"/media/Data/ABCD/ABCD3/"
+ABCD3Fold <-"/Volumes/Data/ABCD/ABCD3/"
+
+
+#utilFold <- paste0(ABCD3Fold, "Analysis/utilFunc/")
+
+#scriptfold = "/media/Data/Yue script/"
+scriptfold = "/Volumes/Data/Yue script/"
+
+
+source(paste0(scriptfold,"stacking_gfactor_modelling/r_functions.R"))
+
+```
+
+set up parallel
+
+```{r}
+# parallel for ubuntu
+#doParallel::registerDoParallel(cores=30)  
+
+### parallel library for mac
+theme_set(theme_bw() + theme(panel.grid = element_blank()))
+## parallel processing number of cores register
+all_cores <- parallel::detectCores(logical = FALSE) - 5
+
+doParallel::registerDoParallel(cores = all_cores)
+
+## this one works for ubuntu but slow
+#library(doFuture)
+#registerDoFuture()
+#plan(multicore(workers = 30))
+
+### parallel for windows
+
+#library(doFuture)
+#registerDoFuture()
+#plan(multisession(workers = 30))
+```
+
+# Load up data files
+
+## Family relationship
+
+```{r, cache = FALSE, warning=FALSE}
+ACS <-read_csv(paste0(dataFold,"ACSPSW03_DATA_TABLE.csv")) 
+#knitr::kable(glimpse(ACS))
+
+# guardian-report relationship
+# Relationship of the participant in his or her family
+# 0 = single; 1 = sibling; 2 = twin; 3 = triplet
+# ACS %>% count(REL_RELATIONSHIP)
+
+ACSselected <- ACS %>% 
+  dplyr::select(SUBJECTKEY, EVENTNAME, INTERVIEW_AGE,
+                              REL_FAMILY_ID, ACS_RAKED_PROPENSITY_SCORE) %>%
+  mutate(REL_FAMILY_ID = as.factor(REL_FAMILY_ID))
+
+ACSselected %>%
+ filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+ skimr::skim()
+
+```
+
+## site information
+
+```{r, cache = FALSE, warning=FALSE}
+###loading site and scanner information
+Siteinfo <-tibble::as_tibble(read.csv(paste0(dataFold, "ABCD_LT01_DATA_TABLE.csv")))
+
+```
+
+vision index
+
+```{r}
+vision_idx <- as_tibble(read.csv(paste0(dataFold,"ABCD_SVS01_DATA_TABLE.CSV"))) %>% 
+  mutate(visionProb = ifelse(SNELLEN_VA_Y == 0 | SNELLEN_VA_Y == 1 | VIS_FLG == 2, 1, 0))
+
+#vision_idx %>% select(SNELLEN_VA_Y, VIS_FLG, visionProb) %>%  arrange(SNELLEN_VA_Y)
+```
+change the wrong site manually based on the: "Release Notes: Adolescent Brain Cognitive Development Study ℠ (ABCD Study ® ) Data Release 4.0 Changes and Known Issues"
+
+only fixed the baseline and two year followup that is used in the analysis
+
+
+```{r}
+
+Siteinfo_fixed <- Siteinfo
+
+
+
+site_fix <- readRDS(paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/site_fix', '.RData'))
+
+
+for(i in 1:dim(site_fix)[1]){
+  fix_site_id  <- site_fix$SUBJECTKEY[i]
+  fix_site_event <- site_fix$EVENTNAME[i]
+  fix_site <- site_fix$SITE_ID_L[i]
+  Siteinfo_fixed$SITE_ID_L[which(Siteinfo_fixed$SUBJECTKEY== fix_site_id& Siteinfo_fixed$EVENTNAME == fix_site_event)] <- fix_site
+}
+
+Siteinfo <-Siteinfo_fixed 
+
+
+```
+
+## Setting up vector of names
+
+```{r}
+
+TaskDVs1Batch = c("NIHTBX_PICVOCAB_UNCORRECTED", 
+                  "NIHTBX_READING_UNCORRECTED",
+              "NIHTBX_FLANKER_UNCORRECTED",
+              "NIHTBX_PATTERN_UNCORRECTED",
+              "NIHTBX_PICTURE_UNCORRECTED",
+               "PEA_RAVLT_LD_TRIAL_VII_TC")
+
+
+subj_info <-  c("SUBJECTKEY","EVENTNAME","SITE_ID_L")   
+
+
+
+
+```
+
+Loading up pre-computed gfactor
+
+```{r,eval=TRUE,echo=FALSE}
+gfactor_list <- readRDS(paste0(scriptfold,'genetics_psychopathology_common_scan_all_scripts/gfactor_scale_seperate', '.RData'))
+```
+
+
+```{r}
+
+baseline_train_gfactor <- purrr::map(gfactor_list,"output_train_baseline")
+baseline_test_gfactor <- purrr::map(gfactor_list,"output_test_baseline")
+followup_train_gfactor <- purrr::map(gfactor_list,"output_train_followup")
+followup_test_gfactor <- purrr::map(gfactor_list,"output_test_followup")
+
+
+```
+
+
+
+## Physical
+
+basically only sleep related are good
+
+not very relevant: 
+ABCD Sum Scores Traumatic Brain Injury	abcd_tbi01
+ABCD Longitudinal Summary Scores Traumatic Brain Injury	abcd_lsstbi01
+ABCD Sum Scores Parent Sports and Activities Involvement  	abcd__spacss01
+ABCD Longitudinal Summary Scores Sports Activity	abcd_lsssa01
+ABCD Sum Scores Parent Medical History	abcd_medhxss01
+ABCD Longitudinal Summary Scores Medical History	abcd_lssmh01
+ABCD Sum Scores Developmental History	abcd_devhxss01
+
+this is mainly about puberty:
+ABCD Sum Scores Physical Health Youth	abcd_ssphy01
+
+sleep scores:
+ABCD Parent Sleep Disturbance Scale for Children 	abcd_sds01
+Diet only at one year follow up:
+ABCD Child Nutrition Assessment	abcd_cna01
+sum sleep score + diet
+ABCD Sum Scores Physical Health Parent	abcd_ssphp01 
+
+```{r, cache = FALSE, message= FALSE}
+#ABCD Parent Sleep Disturbance Scale for Children
+#SLEEPDISTURB1_P
+#How many hours of sleep does your child get on most nights? ¬øCu√°ntas horas duerme su ni√±o(a) la mayor√≠a de las noches?
+#1 = 9-11 hours/ 9 a 11 horas; 2 = 8-9 hours /8 a 9 horas; 3 = 7-8 hours /7 a 8 horas; 4 = 5-7 hours /5 a 7 horas; 5 = Less than 5 hours/ Menos de 5 horas// Consider each question pertaining to the PAST 6 MONTHS of the child's life
+#SLEEPDISTURB2_P
+#How long after going to bed does your child usually fall asleep? Despu√©s de acostarse ¬øgeneralmente cu√°nto tiempo tarda su ni√±o(a) en quedarse dormido(a)?
+#1 = Less than 15 minutes /Menos de 15 minutos; 2 = 15-30 minutes 15 a 30 minutos; 3 = 30-45 minutes /30 a 45 minutos; 4 = 45-60 minutes /45 a 60 minutos; 5 = More than 60 minutes /M√°s de 60 minutos//Consider each question pertaining to the PAST 6 MONTHS of the child's life
+sleepDis <-as_tibble(read.csv(paste0(dataFold,"ABCD_SDS01_DATA_TABLE.csv"))) %>%
+    distinct(dplyr::select(.,-ABCD_SDS01_ID, -DATASET_ID),.keep_all = TRUE) #for some reason there is a duplicate based on these two variables
+
+# sleepDis %>% filter(EVENTNAME =="baseline_year_1_arm_1") %>% 
+#   distinct(select(.,-ABCD_SDS01_ID, -DATASET_ID),.keep_all = TRUE) %>% 
+#   arrange(SUBJECTKEY)
+
+sleepDis %>%  filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+  dplyr::select(SLEEPDISTURB1_P,SLEEPDISTURB2_P) %>%
+  skimr::skim()
+
+sleepDis %>%  filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>%
+  dplyr::select(SLEEPDISTURB1_P,SLEEPDISTURB2_P) %>%
+  skimr::skim()
+
+PhysicalSum <-as_tibble(read.csv(paste0(dataFold,"ABCD_SSPHP01_DATA_TABLE.csv"))) 
+
+PhysicalSum %>% dplyr::select(-1:-8)  %>% 
+   skimr::skim()
+
+# sds_p_ss_dims
+# Disorders of Initiating and Maintaining Sleep (DIMS) SUM:  sleepdisturb1_p +  sleepdisturb2_p + sleepdisturb3_p + sleepdisturb4_p + sleepdisturb5_p + sleepdisturb10_p + sleepdisturb11_p;  Validation: All items must be answered
+# 
+# sds_p_ss_sbd
+# Sleep Breathing disorders (SBD):  SUM sleepdisturb13_p +  sleepdisturb14_p + sleepdisturb15_p; Validation: All items must be answered
+# 
+# sds_p_ss_da
+# Disorder of Arousal (DA) SUM: sleepdisturb17_p +  sleepdisturb20_p + sleepdisturb21_p;  Validation: All items must be answered
+# 
+# sds_p_ss_swtd
+# Sleep-Wake transition Disorders (SWTD) SUM: sleepdisturb6_p + sleepdisturb7_p + sleepdisturb8_p + sleepdisturb12_p +  sleepdisturb18_p + sleepdisturb19_p; Validation: All items must be answered
+# 
+# sds_p_ss_does
+# Disorders of Excessive Somnolence (DOES) SUM:  sleepdisturb22_p + sleepdisturb23_p +  sleepdisturb24_p +  sleepdisturb25_p + sleepdisturb26_p; Validation: All items must be answered
+# 
+# sds_p_ss_shy
+# Sleep Hyperhydrosis (SHY) SUM: sleepdisturb9_p + sleepdisturb16_p; Validation: All items must be answered
+# 
+# sds_p_ss_total
+# Total Score (Sum of 6 Factors): sds_p_ss_dims + sds_p_ss_sbd + sds_p_ss_da + sds_p_ss_swtd + sds_p_ss_does + sds_p_ss_shy; Validation: All items must be answered
+
+sleepSum <- sleepDis %>% full_join(PhysicalSum, by = c("SUBJECTKEY", "EVENTNAME")) %>%
+  dplyr::select(SUBJECTKEY, EVENTNAME, SLEEPDISTURB1_P, SLEEPDISTURB2_P,
+         SDS_P_SS_DIMS, SDS_P_SS_SBD, SDS_P_SS_DA, SDS_P_SS_SWTD, SDS_P_SS_DOES, SDS_P_SS_SHY, SDS_P_SS_TOTAL) %>%
+  rename(sleep_hours = SLEEPDISTURB1_P) %>%
+  rename(sleep_disturb = SLEEPDISTURB2_P) %>%
+  rename(sleep_initiate_maintain = SDS_P_SS_DIMS) %>%
+  rename(sleep_breath = SDS_P_SS_SBD) %>%
+  rename(sleep_arousal = SDS_P_SS_DA) %>%
+  rename(sleep_transition = SDS_P_SS_SWTD) %>%
+  rename(sleep_somnolence = SDS_P_SS_DOES) %>%
+  rename(sleep_hyperhydrosis = SDS_P_SS_SHY) %>%
+  rename(sleep_total = SDS_P_SS_TOTAL) 
+
+sleepSum %>% filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+  dplyr::select(-SUBJECTKEY,-EVENTNAME) %>%
+   skimr::skim()
+
+sleepSum %>% filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>%
+  dplyr::select(-SUBJECTKEY,-EVENTNAME) %>%
+   skimr::skim()
+```
+
+## behavioral
+
+### screen time
+
+ABCD Youth Screen Time Survey	abcd_stq01
+
+Youth Screen Time Survey
+This measure includes customized questions about the overall amount of time that the youth spends using visual media, on a typical weekday and weekend day. Media activities assessed include: (1) Watching TV shows or movies; (2) Watching videos (such as YouTube); (3) Playing video games on a computer, console, phone or other device; (4) Texting on a cell phone, tablet, or computer; (5) Visiting social networking sites like Facebook, Twitter, Instagram; (6) Video chat.  Seven response options were: none, < 30 minutes, 30 minutes, 1 hour, 2 hours, 3 hours, and 4+ hours.
+
+
+```{r, cache = FALSE, message= FALSE}
+youthScreen <-as_tibble(read.csv(paste0(dataFold,"ABCD_STQ01_DATA_TABLE.csv")))  
+# filter(EVENTNAME =="baseline_year_1_arm_1") 
+
+#On a typical weekend/weekday, how many hours do you
+#0 = None; .25 = < 30 minutes; 0.5 = 30 minutes; 1 = 1 hour; 2 = 2 hours; 3 = 3 hours; 4 = 4+ hours //Example: 1½ hours would be coded as 1 hour, rather than 2 hours.	
+#How often do you play mature-rated video games (e.g., Call of Duty, Grand Theft Auto, Assassin's Creed, etc.)?
+#How often do you watch R-rated movies?
+
+youthScreenAdded <- youthScreen %>% 
+  mutate(wkdySum_Screen = rowSums(dplyr::select(.,ends_with("WKDY_Y")))) %>% 
+  mutate(wkndSum_Screen = rowSums(dplyr::select(.,ends_with("WKND_Y")))) %>%
+  rename(matureGames_Screen = SCREEN13_Y) %>%
+  rename(matureMovies_Screen = SCREEN14_Y) 
+
+youthScreenSum <- youthScreenAdded %>%
+  dplyr::select(SUBJECTKEY,EVENTNAME, ends_with("_Screen"))
+
+youthScreenSum %>% filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+  dplyr::select(-SUBJECTKEY,-EVENTNAME) %>%
+  skimr::skim()
+
+youthScreenSum %>% filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>%
+  dplyr::select(-SUBJECTKEY,-EVENTNAME) %>%
+  skimr::skim()
+```
+
+### maternal substance use
+
+```{r}
+
+#ABCD Developmental History Questionnaire
+DevHis <-as_tibble(read.csv(paste0(dataFold,"DHX01_DATA_TABLE.csv"))) %>% 
+ #filter(VISIT =="baseline_year_1_arm_1")  %>% 
+  rename(EVENTNAME = VISIT)
+
+#glimpse(DevHis)
+
+
+DevHis %>% filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+  dplyr::select(starts_with("DEVHX_8")) %>%
+  skimr::skim()
+
+DevHis %>% filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>%
+  dplyr::select(starts_with("DEVHX_8")) %>%
+  skimr::skim()
+
+
+#devhx_8_tobacco
+#Before knowing of pregnancy. Tobacco? How many times per day?/ ?Cuantas veces al d?a?
+
+#devhx_9_tobacco
+#Knowing of pregnancy. Tobacco? How many times per day?/ ?Cuantas veces al d?a?
+
+#devhx_8_alcohol
+#Before knowing of pregnancy. Alcohol? /?Alcohol?
+
+#devhx_9_alcohol
+#Knowing of pregnancy. Alcohol? /?Alcohol?
+
+#devhx_8_marijuana
+#Before knowing of pregnancy. Marijuana? /?Marihuana?
+
+#devhx_9_marijuana
+#Knowing of pregnancy. Marijuana? /?Marihuana?
+
+# change name and replace 999 with na
+
+momSubstanceUse <- DevHis %>% 
+  mutate_if(is.numeric, ~na_if(., 999)) %>% 
+  mutate(tobacco_before_preg = as.factor(DEVHX_8_TOBACCO)) %>% 
+  mutate(tobacco_after_preg = as.factor(DEVHX_9_TOBACCO)) %>% 
+  mutate(alcohol_before_preg = as.factor(DEVHX_8_ALCOHOL)) %>% 
+  mutate(alcohol_after_preg = as.factor(DEVHX_9_ALCOHOL)) %>% 
+  mutate(marijuana_before_preg = as.factor(DEVHX_8_MARIJUANA)) %>% 
+  mutate(marijuana_after_preg = as.factor(DEVHX_9_MARIJUANA)) %>%
+  dplyr::select(SUBJECTKEY,EVENTNAME, ends_with("_preg")) %>%
+  droplevels()
+
+momSubstanceUse %>% filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+  dplyr::select(-SUBJECTKEY,-EVENTNAME) %>%
+  skimr::skim()
+
+momSubstanceUse %>% filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>%
+  dplyr::select(-SUBJECTKEY,-EVENTNAME) %>%
+  skimr::skim()
+```
+
+### developmental adversity
+
+```{r}
+DevHis %>% filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+  dplyr::select(starts_with(c("BIRTH_WEIGHT","DEVHX_10","DEVHX_12","DEVHX_13","DEVHX_14"))) %>%
+  skimr::skim()
+
+DevHis %>% filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>%
+  dplyr::select(starts_with(c("BIRTH_WEIGHT","DEVHX_10","DEVHX_12","DEVHX_13","DEVHX_14"))) %>%
+  skimr::skim()
+#devhx_12a_p
+#Was the child born prematurely? /?Naci? el ni?o o la ni?a antes de tiempo?
+adversitySum <- DevHis %>% 
+  mutate_if(is.numeric, ~na_if(., 999))  %>%
+  mutate(deveplopment_prematurity = as.factor(DEVHX_12A_P)) %>%
+  mutate(deveplopment_birth_complications = rowSums(dplyr::select(.,starts_with("DEVHX_14")))) %>%
+  #mutate(deveplopment_birth_kg = BIRTH_WEIGHT_LBS*0.453592) %>% #all na???
+  mutate(deveplopment_pregnancy_complications = rowSums(dplyr::select(.,DEVHX_10A3_P:DEVHX_10L3_P))) %>%
+  dplyr::select(SUBJECTKEY,EVENTNAME, starts_with("deveplopment_")) 
+
+adversitySum %>% filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+  dplyr::select(-SUBJECTKEY,-EVENTNAME) %>%
+  skimr::skim()
+
+adversitySum %>% filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>%
+  dplyr::select(-SUBJECTKEY,-EVENTNAME) %>%
+  skimr::skim()
+```
+
+
+### brain truma
+most events are quite rare.
+
+```{r, cache = FALSE}
+
+brainTruma <- as_tibble(read.csv(paste0(dataFold,"ABCD_OTBI01_DATA_TABLE.csv"))) 
+
+brainTruma %>% filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+  dplyr::select(-1:-8) %>%
+ skimr::skim()
+brainTruma %>% filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>%
+  dplyr::select(-1:-8) %>%
+ skimr::skim()
+```
+
+## culture 
+
+### bilingual
+https://www.nature.com/articles/s41562-019-0609-3
+https://github.com/anthonystevendick/bilingual_abcd/blob/master/bilingual_analysis.r
+accult_q1_y	
+How well do you speak English?	
+1 = Poor; 2 = Fair; 3 = Good; 4 = Excellent	
+accult_q2_y	
+Besides English, do you speak or understand another language or dialect? If child asks about languages learned in school, the RA should state: That's OK, as long as it is a language or dialect that you speak or understand.	
+1 = Poor Mal; 2 = Fair Regular; 3 = Good Bien; 4 = Excellent Excelente; 777 = Refused Niego contestar; 999 = Don't Know No se	
+accult_q4_y	
+What language do you speak with most of your friends?	
+1 = (Other language) all the time; 2 = (Other language) most of the time; 3 = (Other language) and English equally; 4 = English most of the time; 5 = English all the time	
+accult_q5_y
+What language do you speak with most of your family?
+1 = (Other language) all the time; 2 = (Other language) most of the time; 3 = (Other language) and English equally; 4 = English most of the time; 5 = English all the time	
+
+```{r, cache = FALSE}
+
+bilingual <-as_tibble(read.csv(paste0(dataFold,"YACC01_DATA_TABLE.csv"))) 
+#%>% filter(EVENTNAME =="baseline_year_1_arm_1")
+
+#bilingual_status
+# #recode the accult_q2_y variable into a binary "Bilingual Status", 0 = not bilingual; 1 = bilingual
+# 
+# bilingual_status <- biLingual$ACCULT_Q2_Y
+# sum(is.na(bilingual_status))
+
+#bilingual_degree
+# #dimension a 'bilingual degree' variable, where 1 = participant said they were bilingual, and they speak the other language with friends all the time, most of the time,
+# #or equally, OR they speak the other language with family all the time, most of the time, or equally.
+# 
+# bilingual_degree <- ifelse(bilingual_status == 0, 0, ifelse(bilingual_status == 1 & (as.numeric(accult_q4_y) <= 3 | as.numeric(accult_q5_y) <= 3), 1, NA))
+# count(bilingual_degree) #check the data
+# sum(is.na(bilingual_degree))
+#### here I change it such that 0 = non-bilingual, 1 = bilingual who use (Other language) < English, 2 = bilingual who use (Other language) >= English 
+
+#bilingual_use
+# 
+# #dimension a continuous 'bilingual use' variable, and reverse-score so that if participants speak the other language with friends all the time, most of the time...,
+# #they will receive high scores on this measure (range 0-8, with 8 indicating a high-degree of other language use)
+# 
+# bilingual_use<-10-(as.numeric(abcd_subset$accult_q4_y)+as.numeric(abcd_subset$accult_q5_y))
+# sum(is.na(bilingual_use))
+####  here I change it such that 0 = non-bilingual, 1 = bilingual who use (Other language) < English, 2 = bilingual who use (Other language) >= English  
+
+
+bilingualAdded <- bilingual %>% 
+  mutate(bilingual_status = factor(ifelse(ACCULT_Q2_Y==777,NA,ACCULT_Q2_Y))) %>%
+  mutate(bilingual_degree = factor(ifelse(bilingual_status == 0, 0, 
+                                    ifelse(bilingual_status == 1 & (as.numeric(ACCULT_Q4_Y) <= 3 | as.numeric(ACCULT_Q5_Y) <= 3), 1,
+                                           ifelse(bilingual_status == 1 & (as.numeric(ACCULT_Q4_Y) > 3 | as.numeric(ACCULT_Q5_Y) > 3), 2,NA))))) %>%
+      mutate(bilingual_use = ifelse(bilingual_status == 0, 0,
+                                  11-(as.numeric(ACCULT_Q4_Y)+as.numeric(ACCULT_Q5_Y))))
+
+bilingualSum <- bilingualAdded %>%
+  dplyr::select(SUBJECTKEY,EVENTNAME, starts_with("bilingual_"))
+
+bilingualSum %>%  filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+  dplyr::select(-SUBJECTKEY,-EVENTNAME) %>%
+  skimr::skim()
+
+bilingualSum %>%  filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>%
+  dplyr::select(-SUBJECTKEY,-EVENTNAME) %>%
+  skimr::skim()
+```
+
+## social demographics
+
+race/ethnicity is from ACS
+family income
+family type 
+household size
+parents' work status # demo_prnt_empl_v2 [a bit too much to include]
+parents' education
+sumEcon_insecurities
+
+### ABCD Parent Demographics Survey
+
+```{r, cache = FALSE}
+
+demograp <-as_tibble(read.csv(paste0(dataFold,"PDEM02_DATA_TABLE.csv"))) 
+
+demograp %>% filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+  dplyr::select(-1:-8) %>%
+   skimr::skim()
+
+demograp %>% filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>%
+  dplyr::select(-1:-8) %>%
+   skimr::skim()
+
+#demo_prnt_marital_v2 
+#marital 
+#Are you now married, widowed, divorced, separated, never married or living with a partner? ¬øUsted actualmente est√° casado(a), viudo(a), divorciado(a), separado(a), nunca se ha casado(a) o vive con una pareja?
+#1 = Married Casado(a) ; 2 = Widowed Viudo(a) ; 3 = Divorced Divorciado(a) ; 4 = Separated Separado(a) ; 5 = Never married Nunca me he casado ; 6 = Living with partner Vivo con una pareja ; 777 = Refused to answer Prefiero no responder
+
+#demo_prnt_ed_v2
+#What is the highest grade or level of school you have completed or the highest degree you have received? ¬øCu√°l es su m√°ximo nivel de estudios completados o el m√°ximo t√≠tulo que ha recibido?
+#0 = Never attended/Kindergarten only Nunca asist√É¬≠/Kinder solamente ; 1 = 1st grade 1.er grado ; 2 = 2nd grade 2.√Ç¬∫ grado ; 3 = 3rd grade 3.er grado ; 4 = 4th grade 4.√Ç¬∫ grado ; 5 = 5th grade 5.√Ç¬∫ grado ; 6 = 6th grade 6.√Ç¬∫ grado ; 7 = 7th grade 7.√Ç¬∫ grado ; 8 = 8th grade 8.√Ç¬∫ grado ; 9 = 9th grade 9.√Ç¬∫ grado ; 10 = 10th grade 10.√Ç¬∫ grado ; 11 = 11th grade 11.√Ç¬∫ grado ; 12 = 12th grade; 13 = High school graduate Preparatoria terminada ; 14 = GED or equivalent Diploma General de Equivalencia (GED) o equivalente ; 15 = Some college; 16 = Associate degree: Occupational; 17 = Associate degree: Academic Program T√É¬≠tulo de asociado: programa acad√É¬©mico ; 18 = Bachelor's degree (ex. BA; 19 = Master's degree (ex. MA; 20 = Professional School degree (ex. MD; 21 = Doctoral degree (ex. PhD; 777 = Refused to answer Prefiero no responder // The following questions are about your partner. Your "partner" refers to any significant figure in your life that helps you in raising your child or has helped you for more than 2 years. This person should be involved 40% or more of the daily activities your child does. For example, your partner could be your spouse. However, your partner could also be your boyfriend/girlfriend or relative.
+
+#demo_comb_income_v2
+#What is your TOTAL COMBINED FAMILY INCOME for the past 12 months? This should include income (before taxes and deductions) from all sources, wages, rent from properties, social security, disability and/or veteran's benefits, unemployment benefits, workman's compensation, help from relative (include child payments and alimony), and so on. ¬øCu√°l de estas categor√≠as es la que mejor describe su INGRESO FAMILIAR TOTAL COMBINADO de los √∫ltimos 12 meses? Este debe incluir los ingresos (antes de impuestos y deducciones) provenientes de todas las fuentes, salarios, renta de propiedades, seguro social, pagos por incapacidad o subsidios para veteranos, subsidios por desempleo, compensaci√≥n por accidentes de trabajo, ayuda de familiares (incluya pensiones alimenticias para hijos y c√≥nyuges divorciados), etc.
+#1= Less than $5,000; 2=$5,000 through $11,999; 3=$12,000 through $15,999; 4=$16,000 through $24,999; 5=$25,000 through $34,999; 6=$35,000 through $49,999; 7=$50,000 through $74,999; 8= $75,000 through $99,999; 9=$100,000 through $199,999; 10=$200,000 and greater. 999 = Don't know No lo s√É¬© ; 777 = Refuse to answer No deseo responder  | If Separated/Divorced, please average the two household incomes. Si es Separado(a) / Divorciado(a), por favor promedie los dos ingresos familiares
+
+#demo_roster_v2
+#How many people are living at your address? INCLUDE everyone who is living or staying at your address for more than 2 months. ¬øCu√°ntas personas est√°n viviendo o qued√°ndose en su domicilio? INCLUYA a todas las personas que lleven viviendo o qued√°ndose en su domicilio durante m√°s de 2 meses.
+
+#demo_fam_exp1_v2
+#demo_fam_exp2_v2
+#demo_fam_exp3_v2
+#demo_fam_exp4_v2
+#demo_fam_exp5_v2
+#demo_fam_exp6_v2
+#demo_fam_exp7_v2
+# In the past 12 months, has there been a time when you and your immediate family experienced any of the following: Needed food but couldn't afford to buy it or couldn't afford to go out to get it? ¬øNecesitaban comida pero no les alcanzaba el dinero para comprarla o para salir a comprarla?
+# 0 = No No; 1 = Yes S√É¬≠; 777 = Refuse to answer Niego contestar
+
+demograpSum <- demograp %>% 
+  dplyr::select(SUBJECTKEY,EVENTNAME,DEMO_PRNT_MARITAL_V2,DEMO_PRNT_ED_V2,DEMO_PRTNR_ED_V2,DEMO_COMB_INCOME_V2,DEMO_ROSTER_V2, starts_with("DEMO_FAM_")) %>%
+  mutate(marital = recode_factor(as.factor( DEMO_PRNT_MARITAL_V2 ),
+                `1` = "married", `2` = "widowed", `3` = "divorced", 
+                `4` = "separated", `5` = "neverMarried", `6` = "livingWithPartner",
+                `777` = NA_character_, `999` = NA_character_,
+                .default = "married")) %>%
+  mutate(education1stPar = ifelse( DEMO_PRNT_ED_V2 %in% c(777,999) , NA, DEMO_PRNT_ED_V2) ) %>%
+  mutate(education2ndPar = ifelse( DEMO_PRTNR_ED_V2 %in% c(777,999) , NA, DEMO_PRTNR_ED_V2) ) %>%
+  mutate(educationAvg = rowMeans(cbind(education1stPar,education2ndPar),na.rm=T)) %>%
+  mutate(combinedIncome = ifelse( DEMO_COMB_INCOME_V2 %in% c(777,999) , NA, DEMO_COMB_INCOME_V2) ) %>%
+  mutate(householdSize= ifelse( DEMO_ROSTER_V2 %in% c(777,999) | DEMO_ROSTER_V2 > 20 , NA, DEMO_ROSTER_V2) ) %>% # trim people who live with > 20 ppl (2 people in total) 
+  mutate(across((starts_with("DEMO_FAM_")), ~ na_if(., 777)),
+        (across((starts_with("DEMO_FAM_")), ~ na_if(., 999)))) %>%
+  mutate(econ_insecurities_sum = rowSums(dplyr::select(.,starts_with("DEMO_FAM_")),na.rm=F)) %>% 
+  dplyr::select(-starts_with("DEMO_"))
+  
+  demograpSum  %>% filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+  skimr::skim()
+
+  demograpSum  %>% filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>%
+  skimr::skim()
+  
+```
+
+### more Social Demographics from Residential History Derived Scores
+
+"RESHIST_ADDR1_ADI_WSUM"
+Residential history derived - Area Deprivation Index: scaled weighted sum based on Kind et al., Annals of Internal Medicine, 2014 1
+"RESHIST_ADDR1_GRNDTOT"
+the grand total Uniform Crime Reports, 
+"RESHIST_ADDR1_LEADRISK"
+the estimated lead risk in census tract of primary residential address
+
+```{r, cache = FALSE}
+RHDS <-as_tibble(read.csv(paste0(dataFold,"ABCD_RHDS01_DATA_TABLE.csv"))) 
+
+# RHDS %>% filter(EVENTNAME =="baseline_year_1_arm_1") %>% select(RESHIST_ADDR1_GRNDTOT) %>%
+#   #select(-1:-8) %>%
+#   summarytools::dfSummary(
+#                         style = 'grid', graph.magnif = 0.75,
+#                         valid.col = FALSE, tmp.img.dir = "/tmp")
+
+# Uniform Crime Reports seem to have some high values. quartic transformation will be applied.
+hist(RHDS$RESHIST_ADDR1_GRNDTOT, breaks = 100)
+hist((RHDS$RESHIST_ADDR1_GRNDTOT)^(1/4), breaks = 100)
+
+ResidHistDer <- RHDS %>% 
+  dplyr::select(SUBJECTKEY,EVENTNAME,
+         RESHIST_ADDR1_ADI_WSUM, RESHIST_ADDR1_GRNDTOT, RESHIST_ADDR1_LEADRISK) %>%
+  rename(area_deprivation_index = RESHIST_ADDR1_ADI_WSUM) %>%
+  mutate(quartic_uniform_crime_reports = (RESHIST_ADDR1_GRNDTOT)^(1/4)) %>% 
+  dplyr::select(-RESHIST_ADDR1_GRNDTOT) %>%
+  rename(lead_risk = RESHIST_ADDR1_LEADRISK) 
+  
+ResidHistDer %>%  filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+  skimr::skim()
+
+ResidHistDer %>%  filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>%
+  skimr::skim()
+```
+## Proximal Environment
+From Zhang et al. Translational Psychiatry (2020) https://doi.org/10.1038/s41398-020-0761-6
+The “Safety from Crime” items from the PhenX Toolkit was used to assess neighborhood safety and crime reports. Additionally, children reported their schoolrisk and protective factors via a 12-item Inventory for School Risk and Protective Factors of the PhenX toolkit.
+
+### ABCD Neighborhood Safety/Crime Survey Modified from PhenX (NSC)  
+from parents and children
+ 
+```{r, cache = FALSE}
+
+NeighboSafety_parent <-as_tibble(read.csv(paste0(dataFold,"ABCD_PNSC01_DATA_TABLE.csv"))) %>% 
+  mutate(neighbo_safety_parent_sum = rowSums(dplyr::select(.,starts_with("NEIGHBORHOOD")),na.rm=F)) %>%
+  dplyr::select(SUBJECTKEY,EVENTNAME, neighbo_safety_parent_sum)
+
+# I feel safe walking in my neighborhood, day or night. Me siento seguro(a) caminando por mi vecindario, de d√≠a o de noche.
+# Violence is not a problem in my neighborhood./ La violencia no es un problema en mi vecindario.
+# My neighborhood is safe from crime. Mi vecindario est√° a salvo de la delincuencia.
+#1 = Strongly Disagree /Muy en desacuerdo; 2 = Disagree /En desacuerdo; 3 = Neutral (neither agree nor disagree)/ Neutral (ni de acuerdo ni en desacuerdo); 4 = Agree /De acuerdo; 5 = Strongly Agree/ Muy de acuerdo//The following questions are about your neighborhood. Your neighborhood is the area within about a 20-minute walk (or about a mile) from your home. For each of the statements please indicate whether you strongly agree, agree, neither agree nor disagree, disagree, or strongly disagree
+
+NeighboSafety_children<-as_tibble(read.csv(paste0(dataFold,"ABCD_NSC01_DATA_TABLE.csv"))) %>% 
+  rename(neighbo_safety_child_sum = NEIGHBORHOOD_CRIME_Y) %>%
+  dplyr::select(SUBJECTKEY,EVENTNAME, neighbo_safety_child_sum)
+
+#My neighborhood is safe from crime.
+
+NeighboSafety <- plyr::join_all(list(NeighboSafety_parent, NeighboSafety_children), by=c('SUBJECTKEY','EVENTNAME'), type='full')
+
+NeighboSafety  %>%  filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+  skimr::skim()
+
+NeighboSafety  %>%  filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>%
+  skimr::skim()
+
+```
+
+### School Risk and Protective Factors Survey
+
+```{r, cache = FALSE}
+SchRisk <-as_tibble(read.csv(paste0(dataFold,"SRPF01_DATA_TABLE.csv"))) %>% 
+ rename(EVENTNAME = VISIT)
+
+school_risk_sum <- SchRisk %>% 
+  mutate(sumSchool_environment = rowSums(dplyr::select(., "SCHOOL_2_Y", "SCHOOL_3_Y", "SCHOOL_4_Y", "SCHOOL_5_Y", "SCHOOL_6_Y", "SCHOOL_7_Y"))) %>%
+  mutate(sumSchool_involvement = rowSums(dplyr::select(., "SCHOOL_8_Y", "SCHOOL_9_Y", "SCHOOL_10_Y", "SCHOOL_12_Y"))) %>%
+  mutate(sumSchool_disengagement = rowSums(dplyr::select(., "SCHOOL_15_Y", "SCHOOL_17_Y"))) %>%
+  dplyr::select(SUBJECTKEY,EVENTNAME, starts_with("sumSchool"))
+
+school_risk_sum %>%  filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+   skimr::skim()
+
+school_risk_sum %>%  filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>%
+   skimr::skim()
+
+```
+
+## Social Interaction
+From Zhang et al. Translational Psychiatry (2020) https://doi.org/10.1038/s41398-020-0761-6
+The child-reported parental monitoring and acceptance, as well as the child- and parent-reported prosocial tendency and family conflicts were included to measure social interactions. Parent monitoring was accessed by a 5-item summary score of the Parental Monitoring Scale24. Parent acceptance was evaluated by the Acceptance Scale, a subscale of the Child Report of Behavior Inventory (CRPBI)25. Prosocial behavior (e.g., being nice, helping, caring) was assessed using the Prosocial Behavior Scale, a subscale from the “Strengths and Difficulties Questionnaire” (SDQ)26. Both parents and youth reported on the youth’s prosocial behavior (e.g., being considerate of other people’s feelings, often offering to help others). In order to assess the family conflicts, the ABCD protocol utilized a 9-item Family Conflict subscale of the Moos Family Environment Scale (FES) for the baseline protocol27.
+
+### ABCD Parental Monitoring Survey
+
+```{r, cache = FALSE}
+ParMonSur <-as_tibble(read.csv(paste0(dataFold,"PMQ01_DATA_TABLE.csv")))
+
+# How often do your parents/guardians know where you are?
+# How often do your parents know who you are with when you are not at school and away from home?
+# If you are at home when your parents or guardians are not, how often do you know how to get in touch with them?
+# How often do you talk to your mom/dad or guardian about your plans for the coming day, such as your plans about what will happen at school or what you are going to do with friends?
+# In an average week, how many times do you and your parents/guardians, eat dinner together?
+#1 = Never; 2 = Almost Never; 3 = Sometimes; 4 = Often; 5 = Always or Almost Always
+
+ParentMonitoring <- ParMonSur %>% 
+  mutate(parent_monitor_mean = rowMeans(dplyr::select(., starts_with("PARENT_MONITOR_")))) %>%
+  dplyr::select(SUBJECTKEY,EVENTNAME, parent_monitor_mean)
+
+ParentMonitoring %>%  filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+      skimr::skim()
+
+ParentMonitoring %>%  filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>%
+      skimr::skim()
+```
+
+### ABCD Family Conflict
+ABCD Parents Reported Parent Family Environment Scale-Family Conflict Subscale Modified from PhenX (FES), version 2 - short name: fes02
+ABCD Youth Reported Parent Family Environment Scale-Family Conflict Subscale Modified from PhenX (FES), version 2 - short name: fes01
+
+```{r, cache = FALSE}
+FamilyConflict_Parents <-as_tibble(read.csv(paste0(dataFold,"FES02_DATA_TABLE.csv"))) %>%
+    distinct(dplyr::select(.,-FES02_ID, -DATASET_ID),.keep_all = TRUE) #for some reason there is a duplicate based on these two variables
+
+# We fight a lot in our family. /Peleamos mucho en nuestra familia.
+# Family members rarely become openly angry. /Los miembros de la familia raramente se enojan abiertamente.
+# Family members sometimes get so angry they throw things./ Los miembros de la familia algunas veces se enojan tanto que avientan cosas.
+# Family members hardly ever lose their tempers. /Los miembros de la familia dificilmente pierden su temperamento.
+# Family members often criticize each other. /Los miembros de la familia con frecuencia se critican unos a otros.
+# Family members sometimes hit each other./ Los miembros de la familia algunas veces se golpean unos a otros.
+# If there is a disagreement in our family, we try hard to smooth things over and keep the peace. /Si hay un desacuerdo en nuestra familia, hacemos todo lo posible por resolverlo y conservar la paz.
+# Family members often try to one-up or outdo each other./ Los miembros de la familia con frecuencia tratan de superar a los dem√°s.
+# In our family, we believe you don't ever get anywhere by raising your voice. /En nuestra familia, creemos que no se llega a nada levantando la voz.
+# 1 = True /Verdadera; 0 = False/ Falsa or 0 = True /Verdadera; 1 = False/ Falsa  
+
+FamilyConflict_parents_sum <- FamilyConflict_Parents  %>% 
+  mutate(fam_conflict_parent = rowSums(dplyr::select(., FAM_ENVIRO1_P:FAM_ENVIRO9R_P ), na.rm = F)) %>%           
+  dplyr::select(SUBJECTKEY,EVENTNAME, fam_conflict_parent)
+
+# FamilyConflict_parents_sum  %>%  filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+#    summarytools::dfSummary(
+#                          style = 'grid', graph.magnif = 0.75, 
+#                          valid.col = FALSE, tmp.img.dir = "/tmp")
+
+FamilyConflict_Children <-as_tibble(read.csv(paste0(dataFold,"ABCD_FES01_DATA_TABLE.csv"))) 
+
+# We fight a lot in our family.
+# Family members rarely become openly angry.
+# Family members sometimes get so angry they throw things.
+# Family members hardly ever lose their tempers.
+# Family members often criticize each other.
+# Family members sometimes hit each other.
+# If there's a disagreement in our family, we try hard to smooth things over and keep the peace.
+# Family members often try to one-up or outdo each other.
+# In our family, we believe you don't ever get anywhere by raising your voice.
+
+FamilyConflict_children_sum <- FamilyConflict_Children   %>% 
+  mutate(fam_conflict_children = rowSums(dplyr::select(., FES_YOUTH_Q1:FES_YOUTH_Q9 ), na.rm = F)) %>%           
+  dplyr::select(SUBJECTKEY,EVENTNAME, fam_conflict_children)
+
+# FamilyConflict_children_sum %>%  filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+#    summarytools::dfSummary(
+#                          style = 'grid', graph.magnif = 0.75, 
+#                          valid.col = FALSE, tmp.img.dir = "/tmp")
+
+FamilyConflict_sum <- plyr::join_all(list(FamilyConflict_parents_sum , FamilyConflict_children_sum), 
+                                by=c('SUBJECTKEY','EVENTNAME'), type='full')
+
+FamilyConflict_sum  %>%  filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+    skimr::skim()
+
+# FamilyConflict_Parents %>%  filter(EVENTNAME =="baseline_year_1_arm_1") %>% arrange(SUBJECTKEY)
+# FamilyConflict_Children %>%  filter(EVENTNAME =="baseline_year_1_arm_1") %>% arrange(SUBJECTKEY)
+# FamilyConflict_sum  %>%  filter(EVENTNAME =="baseline_year_1_arm_1") %>% arrange(SUBJECTKEY) 
+
+FamilyConflict_sum  %>%  filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>%
+    skimr::skim()
+```
+
+### Prosocial Tendency
+Parent Prosocial Behavior Survey
+Youth Prosocial Behavior Survey
+```{r, cache = FALSE}
+#Parent Prosocial Behavior Survey
+ParPS <-as_tibble(read.csv(paste0(dataFold,"PSB01_DATA_TABLE.csv"))) 
+
+#Youth Prosocial Behavior Survey
+YouthPS <-as_tibble(read.csv(paste0(dataFold,"ABCD_PSB01_DATA_TABLE.csv")))
+
+prosocial_sum <- plyr::join_all(list(ParPS , YouthPS), 
+                                by=c('SUBJECTKEY','EVENTNAME'), type='full') %>%
+ mutate(prosocial_parent_mean = rowMeans(dplyr::select(., "PROSOCIAL_Q1_P", "PROSOCIAL_Q2_P", "PROSOCIAL_Q3_P"))) %>%
+ mutate(prosocial_youth_mean = rowMeans(dplyr::select(., "PROSOCIAL_Q1_Y", "PROSOCIAL_Q2_Y", "PROSOCIAL_Q3_Y"))) %>%
+ dplyr::select(SUBJECTKEY,EVENTNAME, prosocial_parent_mean,prosocial_youth_mean)  
+
+prosocial_sum %>%  filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+skimr::skim()
+
+
+prosocial_sum %>%  filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>%
+skimr::skim()
+
+```
+
+## Parent Sports and Activities
+
+### ABCD Sum Scores Parent Sports and Activities Involvement  
+multiplying hours x days x 4 weeks x months x years /24 to get days
+this method leads to high zeros. this might be because of the 999 -> 0??
+```{r, cache = FALSE, warning= FALSE}
+sport_act <-as_tibble(read.csv(paste0(dataFold,"ABCD_SPACSS01_DATA_TABLE.csv"))) 
+
+sport_act_multiplied_sum <- sport_act %>% 
+  # change 999 to 0. don't know seems to infer that the child doesn't do that activiy
+  mutate_at(vars(starts_with("SAI_SS_")), ~ replace(., which(.==999), 0)) %>%
+  # 0 = 0; 1 = 1; 2 = 2; 3 = 3; 4 = 4; 5 = 5; 6 = 6; 7 = 7; 8 = Once every 2 weeks; 9 = One day every month; 10 = Less than one day per month/; 999 = Don't know | When ballet/dance was not endorsed, values for the follow-up questions are missing. Here, missing values for  the  "... how many...?" follow-up questions have been replaced with "0". 
+  #change this so that 0 = nothing, .125 = Less than one day per month, .25 = One day every month, .5 =Once every 2 weeks, 1 = 1 day per week and so on
+  mutate_at(.vars = vars(ends_with("_PERWK_P")),
+            .funs = funs(case_when(. == 10 ~ .125,
+                                   . == 9 ~ .25,
+                                   . == 8 ~ .5,
+                                   TRUE ~ as.numeric(.)))) %>%
+  # mutate_at(.vars = vars(ends_with("_PERWK_P")),
+  #           .funs = funs(case_when(. == 10 ~ 1,
+  #                                  . == 9 ~ 2,
+  #                                  . == 8 ~ 3,
+  #                                  . == 1 ~ 4,
+  #                                  . == 2 ~ 5,
+  #                                  . == 3 ~ 6,
+  #                                  . == 4 ~ 7,
+  #                                  . == 5 ~ 8,
+  #                                  . == 6 ~ 9,
+  #                                  . == 7 ~ 10,
+  #                                  TRUE ~ as.numeric(.)))) %>%
+  #0 = 0; 1 = less than 30 minutes; 2 = 30; 3 = 45; 4 = 60 (1 hr); 5 = 90 (1.5 hrs); 6 = 120 (2 hrs); 7 = 150 (2.5 hrs); 8 = 180 (3 hrs); 9 = greater than 3 hours; 999 = Don't know | When ballet/dance was not endorsed, values for the follow-up questions are missing. Here, missing values for  the  "... how many...?" follow-up questions have been replaced with "0".  
+  #change to hours unit. assumes less than 30 minutes to be .25 hour(15 mins) and > 3 hrs to be 4 hours
+ mutate_at(.vars = vars(ends_with("_TSPENT_P")),
+            .funs = funs(case_when(. == 1 ~ .25,
+                                   . == 2 ~ .5,
+                                   . == 3 ~ .75,
+                                   . == 4 ~ 1,
+                                   . == 5 ~ 1.5,
+                                   . == 6 ~ 2,
+                                   . == 7 ~ 2.5,
+                                   . == 8 ~ 3,
+                                   . == 9 ~ 4,
+                                   TRUE ~ as.numeric(.)))) %>%
+  #hours x days x 4 weeks x months x years /24 to get days
+  mutate(dance_days = SAI_SS_DANCE_TSPENT_P*SAI_SS_DANCE_PERWK_P*4*SAI_SS_DANCE_NMONTH_P*SAI_SS_DANCE_NYR_P/24) %>%
+  mutate(base_days = SAI_SS_BASE_TSPENT_P*SAI_SS_BASE_PERWK_P*4*SAI_SS_BASE_NMONTH_P*SAI_SS_BASE_NYR_P/24) %>%
+  mutate(basket_days = SAI_SS_BASKET_TSPENT_P*SAI_SS_BASKET_PERWK_P*4*SAI_SS_BASKET_NMONTH_P*SAI_SS_BASKET_NYR_P/24) %>%
+  mutate(climb_days = SAI_SS_CLIMB_TSPENT_P*SAI_SS_CLIMB_PERWK_P*4*SAI_SS_CLIMB_NMONTH_P*SAI_SS_CLIMB_NYR_P/24) %>%
+  mutate(fball_days = SAI_SS_FBALL_TSPENT_P*SAI_SS_FBALL_PERWK_P*4*SAI_SS_FBALL_NMONTH_P*SAI_SS_FBALL_NYR_P/24) %>%
+  mutate(fhock_days = SAI_SS_FHOCK_TSPENT_P*SAI_SS_FHOCK_PERWK_P*4*SAI_SS_FHOCK_NMONTH_P*SAI_SS_FHOCK_NYR_P/24) %>%
+  mutate(gym_days = SAI_SS_GYM_TSPENT_P*SAI_SS_GYM_PERWK_P*4*SAI_SS_GYM_NMONTH_P*SAI_SS_GYM_NYR_P/24) %>%
+  mutate(ihock_days = SAI_SS_IHOCK_TSPENT_P*SAI_SS_IHOCK_PERWK_P*4*SAI_SS_IHOCK_NMONTH_P*SAI_SS_IHOCK_NYR_P/24) %>%
+  mutate(polo_days = SAI_SS_POLO_TSPENT_P*SAI_SS_POLO_PERWK_P*4*SAI_SS_POLO_NMONTH_P*SAI_SS_POLO_NYR_P/24) %>%
+  mutate(iskate_days = SAI_SS_ISKATE_TSPENT_P*SAI_SS_ISKATE_PERWK_P*4*SAI_SS_ISKATE_NMONTH_P*SAI_SS_ISKATE_NYR_P/24) %>%
+  mutate(m_arts_days = SAI_SS_M_ARTS_TSPENT_P*SAI_SS_M_ARTS_PERWK_P*4*SAI_SS_M_ARTS_NMONTH_P*SAI_SS_M_ARTS_NYR_P/24) %>%
+  mutate(lax_days = SAI_SS_LAX_TSPENT_P*SAI_SS_LAX_PERWK_P*4*SAI_SS_LAX_NMONTH_P*SAI_SS_LAX_NYR_P/24) %>%
+  mutate(rugby_days = SAI_SS_RUGBY_TSPENT_P*SAI_SS_RUGBY_PERWK_P*4*SAI_SS_RUGBY_NMONTH_P*SAI_SS_RUGBY_NYR_P/24) %>%
+  mutate(skate_days = SAI_SS_SKATE_TSPENT_P*SAI_SS_SKATE_PERWK_P*4*SAI_SS_SKATE_NMONTH_P*SAI_SS_SKATE_NYR_P/24) %>%
+  mutate(sboard_days = SAI_SS_SBOARD_TSPENT_P*SAI_SS_SBOARD_PERWK_P*4*SAI_SS_SBOARD_NMONTH_P*SAI_SS_SBOARD_NYR_P/24) %>%
+  mutate(soc_days = SAI_SS_SOC_TSPENT_P*SAI_SS_SOC_PERWK_P*4*SAI_SS_SOC_NMONTH_P*SAI_SS_SOC_NYR_P/24) %>%
+  mutate(surf_days = SAI_SS_SURF_TSPENT_P*SAI_SS_SURF_PERWK_P*4*SAI_SS_SURF_NMONTH_P*SAI_SS_SURF_NYR_P/24) %>%
+  mutate(wpolo_days = SAI_SS_WPOLO_TSPENT_P*SAI_SS_WPOLO_PERWK_P*4*SAI_SS_WPOLO_NMONTH_P*SAI_SS_WPOLO_NYR_P/24) %>%
+  mutate(tennis_days = SAI_SS_TENNIS_TSPENT_P*SAI_SS_TENNIS_PERWK_P*4*SAI_SS_TENNIS_NMONTH_P*SAI_SS_TENNIS_NYR_P/24) %>%
+  mutate(run_days = SAI_SS_RUN_TSPENT_P*SAI_SS_RUN_PERWK_P*4*SAI_SS_RUN_NMONTH_P*SAI_SS_RUN_NYR_P/24) %>%
+  mutate(mma_days = SAI_SS_MMA_TSPENT_P*SAI_SS_MMA_PERWK_P*4*SAI_SS_MMA_NMONTH_P*SAI_SS_MMA_NYR_P/24) %>%
+  mutate(vball_days = SAI_SS_VBALL_TSPENT_P*SAI_SS_VBALL_PERWK_P*4*SAI_SS_VBALL_NMONTH_P*SAI_SS_VBALL_NYR_P/24) %>%
+  mutate(yoga_days = SAI_SS_YOGA_TSPENT_P*SAI_SS_YOGA_PERWK_P*4*SAI_SS_YOGA_NMONTH_P*SAI_SS_YOGA_NYR_P/24) %>%
+  mutate(music_days = SAI_SS_MUSIC_TSPENT_P*SAI_SS_MUSIC_PERWK_P*4*SAI_SS_MUSIC_NMONTH_P*SAI_SS_MUSIC_NYR_P/24) %>%
+  mutate(art_days = SAI_SS_ART_TSPENT_P*SAI_SS_ART_PERWK_P*4*SAI_SS_ART_NMONTH_P*SAI_SS_ART_NYR_P/24) %>%
+  mutate(drama_days = SAI_SS_DRAMA_TSPENT_P*SAI_SS_DRAMA_PERWK_P*4*SAI_SS_DRAMA_NMONTH_P*SAI_SS_DRAMA_NYR_P/24) %>%
+  mutate(craft_days = SAI_SS_CRAFTS_TSPENT_P*SAI_SS_CRAFTS_PERWK_P*4*SAI_SS_CRAFTS_NMONTH_P*SAI_SS_CRAFTS_NYR_P/24) %>%
+  mutate(chess_days = SAI_SS_CHESS_TSPENT_P*SAI_SS_CHESS_PERWK_P*4*SAI_SS_CHESS_NMONTH_P*SAI_SS_CHESS_NYR_P/24) %>%
+  mutate(collect_days = SAI_SS_COLLECT_TSPENT_P*SAI_SS_COLLECT_PERWK_P*4*SAI_SS_COLLECT_NMONTH_P*SAI_SS_COLLECT_NYR_P/24) %>%
+# didn't include listening to music or reading since they are in the different scale
+# summary based on kerlic's child dev paper
+  mutate(phys_ind_days_sum = sboard_days + climb_days + gym_days + iskate_days + m_arts_days + skate_days + dance_days + surf_days + tennis_days + run_days + mma_days + yoga_days) %>%
+  mutate(phys_team_days_sum = base_days + basket_days + fhock_days + fball_days + ihock_days + polo_days + lax_days + rugby_days + soc_days + wpolo_days +vball_days) %>%
+  mutate(art_days_sum = collect_days + music_days + art_days + drama_days + craft_days + chess_days) %>%
+  mutate(sport_act_all_days_sum = phys_ind_days_sum + phys_team_days_sum + art_days_sum) %>%
+  mutate(phys_ind_daypweek_sum = SAI_SS_SBOARD_PERWK_P + SAI_SS_CLIMB_PERWK_P + SAI_SS_GYM_PERWK_P + SAI_SS_ISKATE_PERWK_P + SAI_SS_M_ARTS_PERWK_P + SAI_SS_SKATE_PERWK_P + SAI_SS_DANCE_PERWK_P + SAI_SS_SURF_PERWK_P + SAI_SS_TENNIS_PERWK_P + SAI_SS_RUN_PERWK_P + SAI_SS_MMA_PERWK_P + SAI_SS_YOGA_PERWK_P) %>%
+  mutate(phys_team_daypweek_sum = SAI_SS_BASE_PERWK_P + SAI_SS_BASKET_PERWK_P + SAI_SS_FHOCK_PERWK_P + SAI_SS_FBALL_PERWK_P + SAI_SS_IHOCK_PERWK_P + SAI_SS_POLO_PERWK_P + SAI_SS_LAX_PERWK_P + SAI_SS_RUGBY_PERWK_P + SAI_SS_SOC_PERWK_P + SAI_SS_WPOLO_PERWK_P +SAI_SS_VBALL_PERWK_P) %>%
+  mutate(art_daypweek_sum = SAI_SS_COLLECT_PERWK_P + SAI_SS_MUSIC_PERWK_P + SAI_SS_ART_PERWK_P + SAI_SS_DRAMA_PERWK_P + SAI_SS_CRAFTS_PERWK_P + SAI_SS_CHESS_PERWK_P) %>%
+  mutate(sport_act_all_daypweek_sum = phys_ind_daypweek_sum + phys_team_daypweek_sum + art_daypweek_sum)
+
+sport_act_multiplied_sum %>%  filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+  skimr::skim()
+
+sport_act_multiplied_sum %>%  filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>%
+  skimr::skim()
+```
+
+### ABCD Sum Scores Parent Sports and Activities Involvement  
+method used by Kerlic et al. They focus only on days per week. The data were converted differently.
+```{r, cache = FALSE}
+sport_act <-as_tibble(read.csv(paste0(dataFold,"ABCD_SPACSS01_DATA_TABLE.csv"))) 
+
+sport_act_kerlic_sum <- sport_act %>% 
+  # change 999 to 0. don't know seems to infer that the child doesn't do that activiy
+  mutate_at(vars(starts_with("SAI_SS_")), ~ replace(., which(.==999), 0)) %>%
+  # 0 = 0; 1 = 1; 2 = 2; 3 = 3; 4 = 4; 5 = 5; 6 = 6; 7 = 7; 8 = Once every 2 weeks; 9 = One day every month; 10 = Less than one day per month/; 999 = Don't know | When ballet/dance was not endorsed, values for the follow-up questions are missing. Here, missing values for  the  "... how many...?" follow-up questions have been replaced with "0". 
+  #change this so that 0 = nothing, .125 = Less than one day per month, .25 = One day every month, .5 =Once every 2 weeks, 1 = 1 day per week and so on
+  mutate_at(.vars = vars(ends_with("_PERWK_P")),
+            .funs = funs(case_when(. == 10 ~ 1,
+                                   . == 9 ~ 2,
+                                   . == 8 ~ 3,
+                                   . == 1 ~ 4,
+                                   . == 2 ~ 5,
+                                   . == 3 ~ 6,
+                                   . == 4 ~ 7,
+                                   . == 5 ~ 8,
+                                   . == 6 ~ 9,
+                                   . == 7 ~ 10,
+                                   TRUE ~ as.numeric(.)))) %>%
+  mutate(phys_ind_daypweek_sum = SAI_SS_SBOARD_PERWK_P + SAI_SS_CLIMB_PERWK_P + SAI_SS_GYM_PERWK_P + SAI_SS_ISKATE_PERWK_P + SAI_SS_M_ARTS_PERWK_P + SAI_SS_SKATE_PERWK_P + SAI_SS_DANCE_PERWK_P + SAI_SS_SURF_PERWK_P + SAI_SS_TENNIS_PERWK_P + SAI_SS_RUN_PERWK_P + SAI_SS_MMA_PERWK_P + SAI_SS_YOGA_PERWK_P) %>%
+  mutate(phys_team_daypweek_sum = SAI_SS_BASE_PERWK_P + SAI_SS_BASKET_PERWK_P + SAI_SS_FHOCK_PERWK_P + SAI_SS_FBALL_PERWK_P + SAI_SS_IHOCK_PERWK_P + SAI_SS_POLO_PERWK_P + SAI_SS_LAX_PERWK_P + SAI_SS_RUGBY_PERWK_P + SAI_SS_SOC_PERWK_P + SAI_SS_WPOLO_PERWK_P +SAI_SS_VBALL_PERWK_P) %>%
+  mutate(art_daypweek_sum = SAI_SS_COLLECT_PERWK_P + SAI_SS_MUSIC_PERWK_P + SAI_SS_ART_PERWK_P + SAI_SS_DRAMA_PERWK_P + SAI_SS_CRAFTS_PERWK_P + SAI_SS_CHESS_PERWK_P) %>%
+  mutate(sport_act_all_daypweek_sum = phys_ind_daypweek_sum + phys_team_daypweek_sum + art_daypweek_sum) %>%
+  dplyr::select(	SUBJECTKEY, EVENTNAME, ends_with("_daypweek_sum"))
+
+sport_act_kerlic_sum %>%  filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+   dplyr::select(-SUBJECTKEY, -EVENTNAME, ends_with('_daypweek_sum')) %>%
+     skimr::skim()
+
+sport_act_kerlic_sum %>%  filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>%
+   dplyr::select(-SUBJECTKEY, -EVENTNAME, ends_with('_daypweek_sum')) %>%
+     skimr::skim()
+```
+
+
+
+### physical activity
+ABCD Youth Risk Behavior Survey Exercise Physical Activity 
+
+```{r, cache = FALSE}
+phyc_act <-as_tibble(read.csv(paste0(dataFold,"ABCD_YRB01_DATA_TABLE.csv"))) %>%
+  rename(physc_act_days = PHYSICAL_ACTIVITY1_Y) %>%
+  dplyr::select(SUBJECTKEY, EVENTNAME, physc_act_days)
+
+#During the past 7 days, on how many days were you physically active for a total of at least 60 minutes per day? (Add up all the time you spent in any kind of physical activity that increased your heart rate and made you breathe hard some of the time)
+
+phyc_act %>%  filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+   dplyr::select(-SUBJECTKEY, -EVENTNAME) %>%
+   skimr::skim()
+
+
+phyc_act %>%  filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>%
+   dplyr::select(-SUBJECTKEY, -EVENTNAME) %>%
+   skimr::skim()
+```
+
+### BMI and Waist
+ABCD Youth Anthropometrics Modified From PhenX 
+values are questionable, even after deleting outliers. We ended up not using them.
+
+```{r, cache = FALSE}
+anthro <-as_tibble(read.csv(paste0(dataFold,"ABCD_ANT01_DATA_TABLE.csv"))) 
+
+count(anthro,ANTHROWEIGHTCAST)
+# remove those (82) with cast as BMI won't be accurate     
+bmi_waist <- anthro %>% 
+  # filter(ANTHROHEIGHTCALC > 30) %>% # remove those who are unusally short. Potentially error in data entering
+  # filter(ANTHROWEIGHTCALC < 500) %>%
+  # filter(!rstatix::is_outlier(ANTHROHEIGHTCALC) & !rstatix::is_outlier(ANTHROWEIGHTCALC)) %>%
+  mutate(bmi = ifelse(ANTHROWEIGHTCAST == 0 | is.na(ANTHROWEIGHTCAST),
+                      (ANTHROWEIGHTCALC/(ANTHROHEIGHTCALC^2))*703,NA)) %>%
+  rename(waist = ANTHRO_WAIST_CM) %>%
+  dplyr::select(SUBJECTKEY, EVENTNAME, bmi, waist, ANTHROWEIGHTCALC, ANTHROHEIGHTCALC)
+  
+# anthro %>% 
+#   mutate(bmi = ifelse(ANTHROWEIGHTCAST == 0 | is.na(ANTHROWEIGHTCAST),
+#                       (ANTHROWEIGHTCALC/(ANTHROHEIGHTCALC^2))*703,NA)) %>%
+#   rename(waist = ANTHRO_WAIST_CM) %>%
+#   arrange(desc(bmi)) %>% glimpse()
+
+# bmi_waist %>% arrange(desc(bmi)) %>% glimpse()
+# bmi_waist %>% arrange(bmi) %>% glimpse()
+# 
+# anthro %>% rstatix::identify_outliers(ANTHROHEIGHTCALC) %>%  arrange(ANTHROHEIGHTCALC) %>% View()
+# anthro %>% rstatix::identify_outliers(ANTHROHEIGHTCALC) %>%  arrange(desc(ANTHROHEIGHTCALC)) %>% View()
+
+# boxplot(anthro$ANTHROHEIGHTCALC)$out
+# boxplot(anthro$ANTHROWEIGHTCALC)$out
+# 
+# boxplot(bmi_waist$ANTHROWEIGHTCALC)$out
+
+bmi_waist %>%  filter(EVENTNAME =="baseline_year_1_arm_1") %>%
+   dplyr::select(-SUBJECTKEY, -EVENTNAME) %>%
+   skimr::skim()
+bmi_waist %>%  filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>%
+   dplyr::select(-SUBJECTKEY, -EVENTNAME) %>%
+   skimr::skim()
+```
+
+
+## Join data
+
+Set the feature names
+
+```{r}
+
+Child_Sleep <- c("sleep_hours","sleep_disturb","sleep_initiate_maintain","sleep_breath","sleep_arousal","sleep_transition","sleep_somnolence","sleep_hyperhydrosis")
+
+Physical_Activity <- c("phys_ind_daypweek_sum","phys_team_daypweek_sum","art_daypweek_sum","physc_act_days")
+
+Child_Screen_Use <- c("matureGames_Screen","matureMovies_Screen","wkdySum_Screen","wkndSum_Screen")
+
+
+Parent_Drug_Use <-c("tobacco_before_preg","tobacco_after_preg","alcohol_before_preg","alcohol_after_preg","marijuana_before_preg","marijuana_after_preg")
+
+
+Child_Developmental_Adversity <- c("deveplopment_prematurity","deveplopment_birth_complications","deveplopment_pregnancy_complications")
+
+Child_Socio_Demographics <- c("bilingual_use","marital","educationAvg","combinedIncome","householdSize","econ_insecurities_sum","area_deprivation_index","lead_risk","quartic_uniform_crime_reports","neighbo_safety_parent_sum","neighbo_safety_child_sum","sumSchool_environment","sumSchool_involvement","sumSchool_disengagement")
+
+Social_Interaction<- c("parent_monitor_mean","fam_conflict_parent","fam_conflict_children","prosocial_parent_mean","prosocial_youth_mean")
+
+
+
+features <- c(Child_Sleep,Physical_Activity,Child_Screen_Use,Parent_Drug_Use,Child_Developmental_Adversity,Child_Socio_Demographics,Social_Interaction)
+
+```
+
+
+```{r, cache=FALSE}
+all_sum_vars <- 
+  plyr::join_all(list(Siteinfo, ACSselected,sleepSum,youthScreenSum,
+                      momSubstanceUse,adversitySum,bilingualSum,
+                      demograpSum,ResidHistDer,NeighboSafety,
+                      school_risk_sum,ParentMonitoring,FamilyConflict_sum,prosocial_sum,
+                      sport_act_kerlic_sum,phyc_act,vision_idx), 
+                 by=c('SUBJECTKEY','EVENTNAME'), type='full') %>%
+  filter(visionProb != 1|is.na(visionProb)) %>% #remove subjects with eyesight problems 
+  dplyr::select(-visionProb)
+
+
+all_sum_vars %>%  filter(EVENTNAME =="baseline_year_1_arm_1") %>% dplyr::select(-1:-2) %>%
+   skimr::skim()
+
+
+all_sum_vars %>%  filter(EVENTNAME =="2_year_follow_up_y_arm_1") %>% dplyr::select(-1:-2) %>%
+   skimr::skim()
+
+```
+
+
+## preprocess site
+make sure that there are no members from the same family at different sites
+
+```{r, cache = FALSE}
+all_sum_vars_baseline <- all_sum_vars %>% filter(EVENTNAME =="baseline_year_1_arm_1") 
+
+all_sum_vars_baseline %>% count(SITE_ID_L)
+
+# check if there are members from the same family at different sites. There are 6 of them.
+all_sum_vars_baseline %>%
+  drop_na(SITE_ID_L) %>%
+  filter(SITE_ID_L != "site22") %>%
+  count(REL_FAMILY_ID, SITE_ID_L) %>%
+  spread(SITE_ID_L, n, fill = 0) %>%
+  dplyr::select(-REL_FAMILY_ID) %>% 
+       as.matrix %>% 
+       crossprod
+
+#below will remove those
+all_sum_vars_baseline_no_dup <- all_sum_vars_baseline %>%
+  drop_na(SITE_ID_L) %>%
+  filter(SITE_ID_L != "site22") %>%
+  group_by(REL_FAMILY_ID) %>% 
+  nest(SITE_ID_L, .key="SITE_ID_L") %>%
+  mutate(dup = ifelse(length(c(unlist(SITE_ID_L)))==1,0,
+                      ifelse(length(unique(c(unlist(SITE_ID_L)))) > 1,1,0))) %>%
+  unnest(SITE_ID_L) %>%
+  ungroup()
+
+family_exclude <- unique(all_sum_vars_baseline_no_dup$REL_FAMILY_ID[which(all_sum_vars_baseline_no_dup$dup==1)])
+
+all_sum_vars_no_dup <- all_sum_vars%>%
+                 filter(!REL_FAMILY_ID %in% family_exclude)%>%
+    drop_na(SITE_ID_L) %>%
+  filter(SITE_ID_L != "site22")
+
+
+### test whether the data set has all the features
+setdiff(features,all_sum_vars_no_dup%>% colnames())
+
+```
+
+
+# Modeling for Socio-Demographic and Psychological Factors 
+
+Samples:
+REL_FAMILY_ID (9856 Levels)
+SITE_ID_L (need to remove 22nd site. having too few subjects)
+ALSO make sure about EVENTNAME
+
+Target:
+Factor analysis of psychopathology: pfactor
+
+46 Features:
+soc-demo-lifestyle-dev
+
+
+Features by catergories:
+
+
+Child Sleep (8):
+sleep_hours
+sleep_disturb
+sleep_initiate_maintain
+sleep_breath
+sleep_arousal
+sleep_transition
+sleep_somnolence
+sleep_hyperhydrosis
+
+Physical Activity (4):
+phys_ind_daypweek_sum
+phys_team_daypweek_sum
+art_daypweek_sum
+physc_act_days
+
+Child Screen Use (4):
+matureGames_Screen
+matureMovies_Screen
+wkdySum_Screen
+wkndSum_Screen
+
+Parent Drug Use (6):
+tobacco_before_preg
+tobacco_after_preg
+alcohol_before_preg
+alcohol_after_preg
+marijuana_before_preg
+marijuana_after_preg
+
+Child Developmental Adversity (3):
+deveplopment_prematurity
+deveplopment_birth_complications
+deveplopment_pregnancy_complications
+
+Child Socio-Demographics (14):
+bilingual_use
+marital
+educationAvg
+combinedIncome
+householdSize
+econ_insecurities_sum
+area_deprivation_index
+lead_risk
+quartic_uniform_crime_reports
+neighbo_safety_parent_sum
+neighbo_safety_child_sum
+sumSchool_environment
+sumSchool_involvement
+sumSchool_disengagement
+
+Social Interaction (5):
+parent_monitor_mean
+fam_conflict_parent
+fam_conflict_children
+prosocial_parent_mean
+prosocial_youth_mean
+
+
+
+set up vector of names based on different catorgies of features
+
+### process data for modelling
+
+```{r}
+
+
+all_features_no_dup <- all_sum_vars_no_dup %>% dplyr::select(all_of(subj_info),all_of(features))
+## change the character variables and factors into numeric values
+
+factor_features <- c("tobacco_before_preg","tobacco_after_preg","alcohol_before_preg"    ,"alcohol_after_preg","marijuana_before_preg","marijuana_after_preg","deveplopment_prematurity", "marital"  )
+
+all_features_no_dup_num <- all_features_no_dup %>%
+                mutate(marital = recode_factor(as.factor(marital),married=1,  widowed=2,divorced=3,separated=4,neverMarried=5,livingWithPartner=6,.default = 1))
+#%>%
+#  mutate_if(is.factor,as.numeric)
+   
+
+###check the NAs in both baseline and followup data sets
+  all_features_no_dup_num_baseline <- all_features_no_dup_num%>%
+    filter(EVENTNAME=="baseline_year_1_arm_1") 
+  
+naniar::vis_miss(all_features_no_dup_num_baseline)
+
+ all_features_no_dup_num_followup <- all_features_no_dup_num%>%
+    filter(EVENTNAME=="2_year_follow_up_y_arm_1") 
+  
+naniar::vis_miss(all_features_no_dup_num_followup)
+```
+
+## Replace the variables with baseline data in the followup
+
+The following variables are only found in the baseline. Those variables are:
+
+"phys_ind_daypweek_sum"
+
+"phys_team_daypweek_sum"   
+
+"art_daypweek_sum" 
+
+"wkdySum_Screen"  
+
+"wkndSum_Screen"                      
+
+"tobacco_before_preg"
+
+"tobacco_after_preg"
+
+"alcohol_before_preg"                 
+
+"alcohol_after_preg"  
+
+"marijuana_before_preg"
+
+"marijuana_after_preg"                
+
+"deveplopment_prematurity"            
+
+"deveplopment_birth_complications"  
+
+"deveplopment_pregnancy_complications"
+
+"marital"    
+
+"educationAvg"                        
+
+ "combinedIncome"
+ 
+ "householdSize"
+ 
+ "econ_insecurities_sum"               
+
+ "area_deprivation_index"
+ 
+ "lead_risk"
+ 
+ "quartic_uniform_crime_reports"    
+
+We use the exact replications in the followup analysis.
+
+The following variables appear in both baseline and followup data:
+
+
+ "sleep_hours"
+ 
+ "sleep_disturb"
+ 
+ "sleep_initiate_maintain"  
+ 
+ "sleep_breath" 
+ 
+ "sleep_arousal"
+ 
+ "sleep_transition"
+ 
+ "sleep_somnolence"         
+
+ "sleep_hyperhydrosis"  
+
+ "physc_act_days"
+
+ "matureGames_Screen"
+
+ "matureMovies_Screen"      
+
+"bilingual_use"
+
+"neighbo_safety_parent_sum"
+
+"neighbo_safety_child_sum"
+
+"sumSchool_environment"    
+
+"sumSchool_involvement"
+
+"sumSchool_disengagement"
+
+"parent_monitor_mean"
+
+"fam_conflict_parent"      
+
+"fam_conflict_children"
+
+"prosocial_parent_mean"
+
+"prosocial_youth_mean"
+
+```{r}
+features_fix_na <- c("phys_ind_daypweek_sum","phys_team_daypweek_sum","art_daypweek_sum" ,"wkdySum_Screen"  ,"wkndSum_Screen","tobacco_before_preg","tobacco_after_preg","alcohol_before_preg","alcohol_after_preg","marijuana_before_preg","marijuana_after_preg","deveplopment_prematurity","deveplopment_birth_complications","deveplopment_pregnancy_complications","marital","educationAvg","combinedIncome","householdSize","econ_insecurities_sum","area_deprivation_index","lead_risk","quartic_uniform_crime_reports"  )
+
+all_features_no_dup_na_fix_baseline <- all_features_no_dup_num_baseline%>%
+                                       dplyr::select(all_of(c("SUBJECTKEY","SITE_ID_L")),all_of(features_fix_na))
+
+all_features_no_dup_na_fix_followup <- all_features_no_dup_num_followup %>% 
+                                       dplyr::select(-all_of(features_fix_na))
+all_features_no_dup_na_fixed_followup <- left_join(all_features_no_dup_na_fix_followup,
+                                                   all_features_no_dup_na_fix_baseline,
+                                                   by =c("SUBJECTKEY","SITE_ID_L"))
+
+## plot the information of missingness after all the NAs are fixed
+naniar::vis_miss(all_features_no_dup_na_fixed_followup)
+
+all_features_no_dup_na_fixed <- bind_rows(all_features_no_dup_num_baseline,all_features_no_dup_na_fixed_followup)
+```
+
+
+Making data splits by site.
+
+```{r}
+
+site_col <- all_features_no_dup_na_fixed  %>%
+  distinct(SITE_ID_L) %>% 
+  arrange(SITE_ID_L) 
+
+site_list <- as.list(site_col$SITE_ID_L)
+
+site_char <- as.character(unlist(site_col$SITE_ID_L))
+
+split_list <- purrr::map(site_list, ~split_func(.x,data_input =all_features_no_dup_na_fixed ))
+
+
+names(split_list) <- site_char
+
+```
+
+
+
+Join features and response across sites
+
+
+```{r}
+
+feature_resp_join <- function(site_input){
+  features_list <- split_list[[site_input]]
+  baseline_train_features <- training(features_list)%>%
+                             filter(EVENTNAME == "baseline_year_1_arm_1")
+  baseline_test_features <- testing(features_list)%>%
+                             filter(EVENTNAME == "baseline_year_1_arm_1")
+  followup_train_features <- training(features_list)%>%
+                             filter(EVENTNAME == "2_year_follow_up_y_arm_1")
+  followup_test_features <- testing(features_list)%>%
+                             filter(EVENTNAME == "2_year_follow_up_y_arm_1")
+  
+  baseline_train <- baseline_train_gfactor[[site_input]]
+  baseline_test <- baseline_test_gfactor[[site_input]]
+  followup_train <- followup_train_gfactor[[site_input]]
+  followup_test <- followup_test_gfactor[[site_input]]
+  ## NAs are removed here
+  baseline_train_all <- full_join(baseline_train_features,baseline_train,by = "SUBJECTKEY")%>%
+                        drop_na("gfactor")
+  baseline_test_all <- full_join(baseline_test_features,baseline_test,by = "SUBJECTKEY")%>%
+                        drop_na("gfactor")
+  followup_train_all <- full_join(followup_train_features,followup_train,by = "SUBJECTKEY")%>%
+                        drop_na("gfactor")
+  followup_test_all <- full_join(followup_test_features,followup_test,by = "SUBJECTKEY")%>%
+                        drop_na("gfactor")
+  
+  baseline_train_select <- baseline_train_all%>%
+                           dplyr::select(-all_of(subj_info))
+  baseline_test_select <- baseline_test_all%>%
+                           dplyr::select(-all_of(subj_info))
+  followup_train_select <- followup_train_all%>%
+                           dplyr::select(-all_of(subj_info))
+  followup_test_select <- followup_test_all%>%
+                           dplyr::select(-all_of(subj_info))
+  
+  
+return(list(baseline_train = baseline_train_all,
+            baseline_test=baseline_test_all,
+            followup_train=followup_train_all,
+            followup_test=followup_test_all,
+            baseline_train_select = baseline_train_select,
+            baseline_test_select=baseline_test_select,
+            followup_train_select=followup_train_select,
+            followup_test_select=followup_test_select))
+}
+
+
+gfactor_ses_split_list <- purrr::map(site_char,~feature_resp_join(site_input = .))
+
+names(gfactor_ses_split_list) <- site_char
+
+
+gfactor_ses_baseline_train <- purrr::map(gfactor_ses_split_list,"baseline_train")
+gfactor_ses_baseline_test <- purrr::map(gfactor_ses_split_list,"baseline_test")
+gfactor_ses_followup_train <- purrr::map(gfactor_ses_split_list,"followup_train")
+gfactor_ses_followup_test <- purrr::map(gfactor_ses_split_list,"followup_test")
+
+
+gfactor_ses_baseline_train_select <- purrr::map(gfactor_ses_split_list,"baseline_train_select")
+gfactor_ses_baseline_test_select <- purrr::map(gfactor_ses_split_list,"baseline_test_select")
+gfactor_ses_followup_train_select <- purrr::map(gfactor_ses_split_list,"followup_train_select")
+gfactor_ses_followup_test_select <- purrr::map(gfactor_ses_split_list,"followup_test_select")
+
+```
+
+
+### scale the data set with dummy variables 
+
+This function can be run by replacing select and map function in the r functions file. Or, run it without loading the PLS packages.
+
+The process of data preparation is as follows
+
+1. Use a recipe to change the dummy variables into the continuous variables. (In the mean time impute the NA with mode and then K-nearest-neightbours)
+2. Scale the baseline train and test data separately. Then scale the followup train and test with the mean and standard deviation from baseline train and test respectively.
+
+
+
+```{r, eval=FALSE}
+
+processed_features_gfactor_ses_list <- purrr::pmap(list(gfactor_ses_baseline_train,
+                                                        gfactor_ses_baseline_test,
+                                                        gfactor_ses_followup_train,
+                                                        gfactor_ses_followup_test),
+                                                   ~data_processing_cross_sites_seperate_dummy(baseline_train=..1,
+                                                 baseline_test=..2,
+                                                 followup_train=..3,
+                                                 followup_test=..4))
+
+```
+
+save and load the processed datasets
+
+```{r,eval=FALSE,echo=FALSE}
+saveRDS(processed_features_gfactor_ses_list,paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/processed_features_gfactor_ses_list_2.0', '.RData'))
+```
+
+## loading the processed data output
+
+
+```{r,eval=TRUE,echo=FALSE}
+processed_features_gfactor_ses_list <- readRDS(paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/processed_features_gfactor_ses_list_2.0', '.RData'))
+```
+
+
+
+### manually fixing variavbles with all zeros in the test datasets
+
+Some of the factor features are all zero in the test sets. They are removed in the recipe because they have a standard deviation of 0. Then those variables are deleted. When fit the model in the test sets, this problem leads to the model fitting function failing to run.
+
+As a part of the imputation that is never done by the recipe function. Those NAs in the data set are going to be replaced with 0.
+
+We find out that 
+1. observations in site 3 do not have crime report.
+2. observations in site 7 do not have widowers.
+
+```{r}
+### find the features
+train_colnames_site03 <- processed_features_gfactor_ses_list[["site03"]][["output_train_baseline"]]%>% colnames()
+test_colnames_site03 <- processed_features_gfactor_ses_list[["site03"]][["output_test_baseline"]]%>% colnames()
+site03_add <- setdiff(train_colnames_site03,test_colnames_site03)
+site03_add
+### check the original data sets
+
+gfactor_ses_baseline_test$site03[[site03_add]]
+### manually fix baseline and followup data
+
+processed_features_gfactor_ses_list[["site03"]][["output_test_baseline"]] <- processed_features_gfactor_ses_list[["site03"]][["output_test_baseline"]]%>% mutate(quartic_uniform_crime_reports=0)
+
+
+processed_features_gfactor_ses_list[["site03"]][["output_test_followup"]] <- processed_features_gfactor_ses_list[["site03"]][["output_test_followup"]]%>% mutate(quartic_uniform_crime_reports=0)
+
+### do the same thing for site07, site20
+
+### find the features
+train_colnames_site07 <- processed_features_gfactor_ses_list[["site07"]][["output_train_baseline"]]%>% colnames()
+test_colnames_site07 <- processed_features_gfactor_ses_list[["site07"]][["output_test_baseline"]]%>% colnames()
+site07_add <- setdiff(train_colnames_site07,test_colnames_site07)
+site07_add
+
+### check the original data sets
+
+which(gfactor_ses_baseline_test$site07[["marital"]]==2)
+
+
+### manually fix baseline and followup data
+
+processed_features_gfactor_ses_list[["site07"]][["output_test_baseline"]] <- processed_features_gfactor_ses_list[["site07"]][["output_test_baseline"]]%>% mutate(marital_X2=0)
+
+
+processed_features_gfactor_ses_list[["site07"]][["output_test_followup"]] <- processed_features_gfactor_ses_list[["site07"]][["output_test_followup"]]%>% mutate(marital_X2=0)
+
+```
+
+
+extract the processed datasets
+
+```{r}
+processed_ses_baseline_train <- purrr::map(processed_features_gfactor_ses_list,"output_train_baseline")
+processed_ses_baseline_test <- purrr::map(processed_features_gfactor_ses_list,"output_test_baseline")
+processed_ses_followup_train <- purrr::map(processed_features_gfactor_ses_list,"output_train_followup")
+processed_ses_followup_test <- purrr::map(processed_features_gfactor_ses_list,"output_test_followup")
+
+processed_ses_baseline_train_select <- purrr::map(processed_ses_baseline_train,~dplyr::select(.,-all_of(subj_info)))
+processed_ses_baseline_test_select <- purrr::map(processed_ses_baseline_test,~dplyr::select(.,-all_of(subj_info)))
+processed_ses_followup_train_select <- purrr::map(processed_ses_followup_train,~dplyr::select(.,-all_of(subj_info)))
+processed_ses_followup_test_select <- purrr::map(processed_ses_followup_test,~dplyr::select(.,-all_of(subj_info)))
+
+
+```
+
+
+# model fitting
+
+## Baseline model fitting
+
+```{r}
+
+### fit the enet model
+### baseline
+dummy_features <- processed_ses_baseline_train_select[[1]] %>% dplyr::select(-"gfactor") %>% colnames()
+
+
+ses_baseline_recipe_list <- purrr::map(.x = processed_ses_baseline_train_select,
+                             ~recipe_prep(train_input=.x, features_input = dummy_features)) 
+
+ses_pls_fit_baseline <-purrr::map(.x=ses_baseline_recipe_list,
+                              ~pls_tune(recipe_input = .x,feature_input =dummy_features )) 
+
+ses_pls_fit_baseline_wf <- purrr::map(ses_pls_fit_baseline,"pls_final_wf")
+
+
+ses_pls_model_fit_baseline <- purrr::pmap(list(ses_baseline_recipe_list,
+                                        ses_pls_fit_baseline_wf,
+                                        processed_ses_baseline_test_select),~
+                                                 model_final_fit(recipe_input = ..1, 
+                                    wf_input = ..2,
+                                    test_data = ..3)) 
+
+
+ses_pls_pred_baseline <- purrr::map(ses_pls_model_fit_baseline,"model_predict")
+
+ses_pls_model_fit_baseline_train <- purrr::pmap(list(ses_baseline_recipe_list,
+                                        ses_pls_fit_baseline_wf,
+                                        processed_ses_baseline_train_select),~
+                                                 model_final_fit(recipe_input = ..1, 
+                                    wf_input = ..2,
+                                    test_data = ..3)) 
+
+ses_pls_pred_baseline_train <- purrr::map(ses_pls_model_fit_baseline_train,"model_predict")
+
+
+ses_baseline_metric <- purrr::map2(.x=ses_pls_pred_baseline,
+     .y=processed_ses_baseline_test,~metric_compute_site(data_input =.x ,
+                                           site_input = .y)) %>%
+                      do.call(rbind,.)
+
+      ses_baseline_metric%>% 
+    kableExtra::kbl(caption = "metrics for all sites in baseline") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+
+ses_baseline_metric_avg <- average_metric_one_mod(metric_list =ses_baseline_metric)
+
+avg_table_var_names <- c("correlation (sd)", "tradrsq (sd)","MAE (sd)","RMSE (sd)"  )
+
+
+ses_baseline_metric_avg_table <- ses_baseline_metric_avg %>%
+  mutate_if(is.numeric, round, digits=3)%>%
+  mutate("correlation (sd)" = paste0(correlation," (",cor_sd,")"))%>%
+  mutate("tradrsq (sd)" = paste0(tradrsq," (",rsq_sd,")"))%>%
+  mutate("MAE (sd)" = paste0(MAE," (",mae_sd,")"))%>%
+  mutate("RMSE (sd)" = paste0(RMSE," (",rmse_sd,")"))%>%
+  select_if(is.character)
+  
+  ses_baseline_metric_avg_table%>%
+    dplyr::select(all_of(avg_table_var_names))%>%
+    kableExtra::kbl(caption = paste0("metrics for modalities averaged across sites in baseline")) %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+
+```
+
+## Followup model fitting
+
+```{r}
+
+### fit the enet model
+### followup
+ses_followup_recipe_list <- purrr::map(.x = processed_ses_followup_train_select,
+                             ~recipe_prep(train_input=.x, features_input = dummy_features)) 
+
+ses_pls_fit_followup <-purrr::map(.x=ses_followup_recipe_list,
+                              ~pls_tune(recipe_input = .x,feature_input =dummy_features )) 
+
+ses_pls_fit_followup_wf <- purrr::map(ses_pls_fit_followup,"pls_final_wf")
+
+
+ses_pls_model_fit_followup <- pmap(list(ses_followup_recipe_list,
+                                        ses_pls_fit_followup_wf,
+                                        processed_ses_followup_test_select),~
+                                                 model_final_fit(recipe_input = ..1, 
+                                    wf_input = ..2,
+                                    test_data = ..3)) 
+
+
+ses_pls_pred_followup <- purrr::map(ses_pls_model_fit_followup,"model_predict")
+
+ses_pls_model_fit_followup_train <- pmap(list(ses_followup_recipe_list,
+                                        ses_pls_fit_followup_wf,
+                                        processed_ses_followup_train_select),~
+                                                 model_final_fit(recipe_input = ..1, 
+                                    wf_input = ..2,
+                                    test_data = ..3)) 
+
+ses_pls_pred_followup_train <- purrr::map(ses_pls_model_fit_followup_train,"model_predict")
+
+
+ses_followup_metric <- purrr::map2(.x=ses_pls_pred_followup,
+     .y=processed_ses_followup_test,~metric_compute_site(data_input =.x ,
+                                           site_input = .y)) %>%
+                      do.call(rbind,.)
+
+      ses_followup_metric%>% 
+    kableExtra::kbl(caption = "metrics for all sites in followup") %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+
+ses_followup_metric_avg <- average_metric_one_mod(metric_list =ses_followup_metric)
+
+ses_followup_metric_avg_table <- ses_followup_metric_avg %>%
+  mutate_if(is.numeric, round, digits=3)%>%
+  mutate("correlation (sd)" = paste0(correlation," (",cor_sd,")"))%>%
+  mutate("tradrsq (sd)" = paste0(tradrsq," (",rsq_sd,")"))%>%
+  mutate("MAE (sd)" = paste0(MAE," (",mae_sd,")"))%>%
+  mutate("RMSE (sd)" = paste0(RMSE," (",rmse_sd,")"))%>%
+  select_if(is.character)
+  
+  ses_followup_metric_avg_table%>%
+    dplyr::select(all_of(avg_table_var_names))%>%
+    kableExtra::kbl(caption = paste0("metrics for modalities averaged across sites in followup")) %>%
+    kableExtra::kable_classic(full_width = F, 
+                             html_font = "Cambria")
+
+
+```
+
+## Plotting the trace of performance metric against the number of factors.
+
+Baseline
+
+
+```{r}
+
+## get the model grid
+ses_pls_grid_baseline  <- purrr::map(ses_pls_fit_baseline,"pls_grid")
+ses_pls_param_baseline  <- purrr::map(ses_pls_fit_baseline,"best_pls_model")
+
+factor_metric_plot <- function(grid_input, param_input){
+  selected_comp <- param_input$num_comp
+  
+  comp_plot <-  grid_input %>% 
+  collect_metrics() %>% 
+  ggplot(aes(num_comp, mean, col = .metric)) +
+  geom_point() +
+  geom_line() +
+  geom_vline(xintercept = selected_comp, size=1.5)+
+  scale_x_continuous(n.breaks = 26) +
+  labs(x = "Number of components",
+       y = "Indicator",
+       title = "Plot of RMSE vs number of components ",
+       subtitle = paste0("Optimal number of components is ", selected_comp)) +
+ facet_grid(.metric ~.) +
+  theme_few() +
+  theme(legend.position = "none")
+
+  return(comp_plot)
+}
+
+
+comp_metric_plot_baseline <- purrr::map2(.x = ses_pls_grid_baseline,
+                                         .y = ses_pls_param_baseline,
+                                         ~factor_metric_plot(grid_input= .x ,
+                                                             param_input = .y))
+
+comp_metric_plot_baseline
+```
+
+
+Followup
+
+```{r}
+
+
+## get the model grid
+ses_pls_grid_followup  <- purrr::map(ses_pls_fit_followup,"pls_grid")
+ses_pls_param_followup  <- purrr::map(ses_pls_fit_followup,"best_pls_model")
+
+comp_metric_plot_followup <- purrr::map2(.x = ses_pls_grid_followup,
+                                         .y = ses_pls_param_followup,
+                                         ~factor_metric_plot(grid_input= .x ,
+                                                             param_input = .y))
+
+comp_metric_plot_followup
+
+```
+
+
+
+
+# Feature importance for the whole data set
+
+
+Loading tables for plotting
+
+```{r}
+plotting_names <- read.csv(paste0(scriptfold,"Common_psy_gene_brain_all/NonBrainFeaturesRead.csv"))
+
+## clean plotting names
+
+plotting_names[72,1] <- "marital_X2"
+plotting_names[73,1] <- "marital_X3"
+plotting_names[74,1] <- "marital_X4"
+plotting_names[75,1] <- "marital_X5"
+plotting_names[76,1] <- "marital_X6"
+
+names(plotting_names) <- c("feature_names","plotting_name")
+
+```
+
+## Baseline
+
+### Variable importance plot for pls models at baseline
+
+Model across all sites.
+
+```{r,fig.width=16,fig.height=12}
+### combine the data set with the same train and test fold
+data_all_site_baseline <- rbind(processed_ses_baseline_train_select[[1]],
+                                processed_ses_baseline_test_select[[1]])
+## retune the model
+all_data_recipe_baseline <- recipe_prep_scale(train_input=data_all_site_baseline, 
+                                        features_input = dummy_features)
+
+all_data_fit_baseline <- pls_tune(recipe_input = all_data_recipe_baseline, 
+                                        feature_input = dummy_features)
+
+all_data_wf_baseline <- all_data_fit_baseline[["pls_final_wf"]]
+## final fit the model
+all_data_final_fit_baseline <- all_data_wf_baseline%>%
+    parsnip::extract_spec_parsnip()%>%
+    parsnip::fit(data = data_all_site_baseline, formula= as.formula("gfactor~."))
+## get the coefficients
+tidy_all_data_final_fit_baseline <- all_data_final_fit_baseline%>% 
+  tidy()
+### extract the number of components
+all_data_param_baseline <-all_data_fit_baseline[["best_pls_model"]][["num_comp"]]
+### extract the variance explained by each component
+
+var_explained <- all_data_final_fit_baseline[["fit"]][["prop_expl_var"]][["X"]]
+
+### plotting feature importance based on the model with all the data
+
+comp_idx_vec <- c(1:all_data_param_baseline)
+
+tidy_all_data_final_fit_baseline <- tidy_all_data_final_fit_baseline %>%
+                                    rename(feature_names = term)
+tidy_all_data_final_fit_baseline_with_name<- full_join(tidy_all_data_final_fit_baseline,
+                                                       plotting_names, by = "feature_names")%>%
+                                                filter(feature_names != "Y", # outcome variable col name
+                                                       )%>% drop_na()
+tidy_all_data_final_fit_baseline_list <- purrr::map(comp_idx_vec,
+                                                    ~filter(tidy_all_data_final_fit_baseline_with_name,
+                                                                         component == .)%>%
+                                                          dplyr::select(all_of(c("plotting_name","value"))))
+
+### get the variable order from the first component:
+
+tidy_all_data_final_fit_baseline_reordered <- tidy_all_data_final_fit_baseline_list[[1]] %>% 
+                                                                  arrange(value)
+
+tidy_all_data_final_fit_baseline_reordered<- tidy_all_data_final_fit_baseline_reordered$plotting_name
+
+pls_vi_plot_with_label <- function(data_input=tidy_all_data_final_fit_baseline_list[[1]],
+                                   var_input = var_explained[1],
+                                   idx_input = comp_idx_vec[1],
+                                   reorder_name = tidy_all_data_final_fit_baseline_reordered){
+  ### arrange the data from small to large
+  data_input <- data_input %>%
+                mutate(plotting_name = as.factor(plotting_name))%>%
+                  mutate(plotting_name = factor(plotting_name,
+                                                levels =reorder_name))
+  
+    range_value <- range(data_input$value)
+  var_title_long <- paste0("component ", idx_input," var explained ",round(var_input,3)*100,"%")
+ var_title_short <- paste0(round(var_input,3)*100,"%")
+  var_title_medium <- paste0("comp ", idx_input," \n ",round(var_input,3)*100,"%")
+
+  bar_plot <- ggplot(data_input, aes(x=.data[["value"]], y=plotting_name)) +
+  geom_bar(stat="identity")+
+  theme_classic() + 
+    scale_x_continuous(limits = c(round(range_value[1],2)-0.05, round(range_value[2],2)+0.05),
+                       breaks = c(round(range_value[1],2)-0.05,0, round(range_value[2],2)+0.05))+
+    labs(title = var_title_medium)+
+theme(
+  axis.title.x = element_blank(),
+  axis.text.x = element_text(size = 20,angle = 60,vjust = 0.5),
+  axis.title.y = element_blank(),
+  axis.text.y = element_text(size = 20),
+  legend.text = element_blank(),
+  plot.title = element_text(size=20))
+  return(bar_plot)
+}
+
+comp_one_plot <- pls_vi_plot_with_label(data_input=tidy_all_data_final_fit_baseline_list[[1]],
+                                   var_input = var_explained[1],
+                                   idx_input = comp_idx_vec[1])
+
+
+
+pls_vi_plot_no_label <- function(data_input=tidy_all_data_final_fit_baseline_list[[2]],
+                                   var_input = var_explained[2],
+                                   idx_input = comp_idx_vec[2],
+                                 reorder_name = tidy_all_data_final_fit_baseline_reordered){
+  ### arrange the data from small to large
+  data_input <- data_input %>%
+                mutate(plotting_name = as.factor(plotting_name))%>%
+                  mutate(plotting_name = factor(plotting_name,
+                                                levels =reorder_name))
+  
+  range_value <- range(data_input$value)
+  
+  var_title_long <- paste0("component ", idx_input," var explained ",round(var_input,3)*100,"%")
+  var_title_short <- paste0(round(var_input,3)*100,"%")
+    var_title_medium <- paste0("comp ", idx_input," \n ",round(var_input,3)*100,"%")
+
+  bar_plot <- ggplot(data_input, aes(x=.data[["value"]], y=plotting_name)) +
+  geom_bar(stat="identity")+
+    scale_x_continuous(limits = c(round(range_value[1],2)-0.05, round(range_value[2],2)+0.05),
+                       breaks = c(round(range_value[1],2)-0.05,0, round(range_value[2],2)+0.05))+
+  theme_classic() + 
+    labs(title = var_title_medium)+
+theme(
+  axis.title.x = element_blank(),
+  axis.text.x = element_text(size = 20,angle = 60,vjust = 0.5),
+  axis.title.y = element_blank(),
+  axis.text.y = element_blank(),
+  legend.text = element_blank(),
+  plot.title = element_text(size=20),
+  axis.ticks = element_blank())
+  return(bar_plot)
+}
+
+
+comp_other_plots <- purrr::pmap(list(tidy_all_data_final_fit_baseline_list[2:all_data_param_baseline],
+                                     var_explained[2:all_data_param_baseline],
+                                     comp_idx_vec[2:all_data_param_baseline
+                                                  ]),~pls_vi_plot_no_label(data_input=..1,
+                                   var_input = ..2,
+                                   idx_input = ..3)) 
+comp_other_plots_combined <- ggpubr::ggarrange(plotlist=comp_other_plots, nrow =1,ncol = length(var_explained)-1)
+
+comp_plots_all <- gridExtra::grid.arrange(comp_one_plot,comp_other_plots_combined,nrow = 1, ncol = 2, widths = c(4.5, 4))
+
+comp_plots_all
+```
+
+### Univariate correlations for baseline data
+
+```{r,fig.height=15,fig.width=11}
+
+corr_baseline_train <- processed_ses_baseline_train_select[[1]]
+corr_baseline_test <- processed_ses_baseline_test_select[[1]]
+
+
+corr_data_all <- rbind(corr_baseline_train,corr_baseline_test)
+corr_features <- corr_data_all %>% dplyr::select(-"gfactor") %>%colnames()
+
+ corr_all_features <- purrr::map(.x = corr_features,~cor(corr_data_all[[.x]],corr_data_all[["gfactor"]]))%>% 
+                                          do.call(rbind,.)%>% as.numeric()
+ 
+ corr_all_features_cor_test <- purrr::map(.x = corr_features,
+                            ~cor.test(corr_data_all[[.x]],corr_data_all[["gfactor"]],method="pearson"))
+ 
+ corr_all_features_ci <- purrr::map(corr_all_features_cor_test,"conf.int")%>% 
+                                          do.call(rbind,.)%>% tibble::as_tibble()%>%
+                                          rename(low=V1,upp=V2)
+    
+ 
+
+ 
+  corr_output_tibble <- tibble(feature_names = corr_features,value = corr_all_features)
+corr_output_tibble <- cbind(corr_output_tibble,corr_all_features_ci)
+  
+ corr_baseline_all_sites_names <- full_join(corr_output_tibble,plotting_names, by = "feature_names")%>% drop_na()
+
+   corr_baseline_all_sites_names%>%
+ mutate(plotting_name = fct_reorder(plotting_name, value,.fun = "max"))%>%
+  ggplot(aes(x = plotting_name, y = value))+
+    geom_bar(stat = "identity",fill="gray30",alpha = 0.7)+
+    geom_errorbar( aes(x=plotting_name, 
+                   ymin=low, 
+                   ymax=upp),
+               width=0.4, colour="black", alpha=0.9, linewidth=1.3)+
+      coord_flip()+
+    theme_classic() + 
+  labs(y =paste0( "Correlation ") , x = "") +
+    theme(axis.title.x= element_text(size = 20),
+          axis.title.y= element_text(size = 20),
+          axis.text.y = element_text(size = 20),
+          axis.text.x = element_text(size = 20))
+```
+
+```{r}
+
+corr_baseline_all_sites_names_for_all <-corr_baseline_all_sites_names%>%
+     mutate(plotting_name = as.factor(plotting_name))%>%
+                  mutate(plotting_name = factor(plotting_name,
+                                                levels =tidy_all_data_final_fit_baseline_reordered))
+  
+  
+corr_bar_plot_baseline <-   corr_baseline_all_sites_names_for_all%>%
+ #mutate(plotting_name = fct_reorder(plotting_name, value,.fun = "max"))%>%
+  ggplot(aes(x = plotting_name, y = value))+
+    geom_bar(stat = "identity",fill="gray40",alpha = 0.7)+
+    geom_errorbar( aes(x=plotting_name, 
+                   ymin=low, 
+                   ymax=upp),
+               width=0.4, colour="black", alpha=0.9, linewidth=1.3)+
+  scale_y_continuous(limits = c(-0.35, 0.45),
+                       breaks = c(-0.35,0, 0.45))+
+      coord_flip()+
+    theme_classic() + 
+    labs(title = "Univariate \ncorrelations")+
+theme(
+  axis.title.x = element_blank(),
+  axis.text.x = element_text(size = 20,angle = 60,vjust = 0.5),
+  axis.title.y = element_blank(),
+  axis.text.y = element_blank(),
+  legend.text = element_blank(),
+  plot.title = element_text(size=20),
+  axis.ticks = element_blank())
+
+
+```
+
+
+### Join correlation plot with univariate together
+
+```{r,fig.width=16,fig.height=12}
+vi_pls_plot_baseline_all <-gridExtra::grid.arrange(comp_plots_all,corr_bar_plot_baseline,nrow = 1, ncol = 2, widths = c(7, 1)) 
+
+vi_pls_plot_baseline_all
+```
+
+
+## Followup
+
+### Variable importance plot for pls models at baseline
+
+Model across all sites.
+
+```{r,fig.width=16,fig.height=12}
+
+data_all_site_followup <- rbind(processed_ses_followup_train_select[[1]],
+                                processed_ses_followup_test_select[[1]])
+
+all_data_recipe_followup <- recipe_prep_scale(train_input=data_all_site_followup, 
+                                        features_input = dummy_features)
+
+## follow the function use a more parsimonious model 
+## cut at the number of component that does not reduce 0.1% of the RMSE
+all_data_fit_followup <- pls_tune(recipe_input = all_data_recipe_followup, 
+                                        feature_input = dummy_features)
+
+all_data_wf_followup <- all_data_fit_followup[["pls_final_wf"]]
+
+all_data_final_fit_followup <- all_data_wf_followup%>%
+    parsnip::extract_spec_parsnip()%>%
+    parsnip::fit(data = data_all_site_followup, formula= as.formula("gfactor~."))
+
+tidy_all_data_final_fit_followup <- all_data_final_fit_followup%>% 
+  tidy()
+
+all_data_param_followup <-all_data_fit_followup[["best_pls_model"]][["num_comp"]]
+### extract the variance explained by each component
+
+var_explained_followup <- all_data_final_fit_followup[["fit"]][["prop_expl_var"]][["X"]]
+
+### plotting feature importance based on the model with all the data
+
+comp_idx_vec_followup <- c(1:all_data_param_followup)
+
+tidy_all_data_final_fit_followup <- tidy_all_data_final_fit_followup %>%
+                                    rename(feature_names = term)
+tidy_all_data_final_fit_followup_with_name<- full_join(tidy_all_data_final_fit_followup,
+                                                       plotting_names, by = "feature_names")%>%
+                                                filter(feature_names != "Y", # outcome variable col name
+                                                       )
+tidy_all_data_final_fit_followup_list <- purrr::map(comp_idx_vec_followup,
+                                                    ~filter(tidy_all_data_final_fit_followup_with_name,
+                                                                         component == .)%>%
+                                                          dplyr::select(all_of(c("plotting_name","value"))))
+
+### get the variable order from the first component:
+
+tidy_all_data_final_fit_followup_reordered <- tidy_all_data_final_fit_followup_list[[1]] %>% 
+                                                                  arrange(value)
+
+tidy_all_data_final_fit_followup_reordered<- tidy_all_data_final_fit_followup_reordered$plotting_name
+
+
+comp_one_plot_followup <- pls_vi_plot_with_label(data_input=tidy_all_data_final_fit_followup_list[[1]],
+                                   var_input = var_explained_followup[1],
+                                   idx_input = comp_idx_vec_followup[1],
+                                   reorder_name=tidy_all_data_final_fit_followup_reordered)
+
+
+comp_other_plots_followup <- purrr::pmap(list(tidy_all_data_final_fit_followup_list[2:all_data_param_followup],
+                                     var_explained_followup[2:all_data_param_followup],
+                                     comp_idx_vec_followup[2:all_data_param_followup]
+                                     ),~pls_vi_plot_no_label(data_input=..1,
+                                   var_input = ..2,
+                                   idx_input = ..3,
+                                   reorder_name=tidy_all_data_final_fit_followup_reordered)) 
+comp_other_plots_combined_followup <- ggpubr::ggarrange(plotlist=comp_other_plots_followup,
+                                                        nrow =1,ncol = length(var_explained_followup)-1)
+
+comp_plots_all_followup <- gridExtra::grid.arrange(comp_one_plot_followup,
+                                                   comp_other_plots_combined_followup,
+                                                   nrow = 1, ncol = 2, widths = c(4.5, 4))
+
+comp_plots_all_followup
+```
+
+
+
+### plotting univariate correlation plots across sites at followup
+
+
+The bar plot for correlations across all sites. Train and test fold are joined together.
+
+```{r,fig.height=15,fig.width=11}
+corr_data_all_followup <- rbind(processed_ses_followup_train[[1]],processed_ses_followup_test[[1]])
+
+ corr_all_features_followup <- purrr::map(.x = dummy_features,~cor(corr_data_all_followup[[.x]],
+                                                             corr_data_all_followup[["gfactor"]]))%>% 
+                                          do.call(rbind,.)%>% as.numeric()
+ 
+ corr_all_features_cor_test_followup <- purrr::map(.x = dummy_features,
+                            ~cor.test(corr_data_all_followup[[.x]],
+                                      corr_data_all_followup[["gfactor"]],method="pearson"))
+ 
+ corr_all_features_ci_followup <- purrr::map(corr_all_features_cor_test_followup,"conf.int")%>% 
+                                          do.call(rbind,.)%>% tibble::as_tibble()%>%
+                                          rename(low=V1,upp=V2)
+                                          
+   
+ 
+corr_output_tibble_followup <- tibble(feature_names = dummy_features,value = corr_all_features_followup)
+corr_output_tibble_followup <- cbind(corr_output_tibble_followup,corr_all_features_ci_followup)
+  
+  corr_followup_all_sites_names <- full_join(corr_output_tibble_followup,
+                                                      plotting_names, by = "feature_names")%>% drop_na()
+  
+  
+   corr_followup_all_sites_names%>%
+ mutate(plotting_name = fct_reorder(plotting_name, value,.fun = "max"))%>%
+  ggplot(aes(x = plotting_name, y = value))+
+    geom_bar(stat = "identity",fill="gray30",alpha = 0.7)+
+    geom_errorbar( aes(x=plotting_name, 
+                   ymin=low, 
+                   ymax=upp),
+               width=0.4, colour="black", alpha=0.9, linewidth=1.3)+
+      coord_flip()+
+    theme_classic() + 
+  labs(y =paste0( "Correlation ") , x = "") +
+    theme(axis.title.x= element_text(size = 20),
+          axis.title.y= element_text(size = 20),
+          axis.text.y = element_text(size = 15),
+          axis.text.x = element_text(size = 20))
+```
+
+
+```{r}
+
+corr_followup_all_sites_names_for_all <-corr_followup_all_sites_names%>%
+     mutate(plotting_name = as.factor(plotting_name))%>%
+                  mutate(plotting_name = factor(plotting_name,
+                                                levels =tidy_all_data_final_fit_followup_reordered))
+  
+  
+corr_bar_plot_followup <-   corr_followup_all_sites_names_for_all%>%
+ #mutate(plotting_name = fct_reorder(plotting_name, value,.fun = "max"))%>%
+  ggplot(aes(x = plotting_name, y = value))+
+    geom_bar(stat = "identity",fill="gray40",alpha = 0.7)+
+    geom_errorbar( aes(x=plotting_name, 
+                   ymin=low, 
+                   ymax=upp),
+               width=0.4, colour="black", alpha=0.9, linewidth=1.3)+
+  scale_y_continuous(limits = c(-0.35, 0.45),
+         breaks = c(-0.35,0, 0.45))+##use this because all the plots should have the same height
+      coord_flip()+
+    theme_classic() + 
+    labs(title = "Univariate \ncorrelations")+
+theme(
+  axis.title.x = element_blank(),
+  axis.text.x = element_text(size = 20,angle = 60,vjust = 0.5),
+  axis.title.y = element_blank(),
+  axis.text.y = element_blank(),
+  legend.text = element_blank(),
+  plot.title = element_text(size=20),
+  axis.ticks = element_blank())
+
+
+```
+
+
+
+## join correlation plot with univariate together
+
+```{r,fig.width=16,fig.height=12}
+
+vi_pls_plot_followup_all <-gridExtra::grid.arrange(comp_plots_all_followup,
+                                                   corr_bar_plot_followup,
+                                                   nrow = 1, ncol = 2, widths = c(7, 1)) 
+vi_pls_plot_followup_all
+```
+Combine baseline and followup together
+
+
+```{r,fig.width=18,fig.height=25}
+
+
+vi_pls_plot_baseline_label <- vi_pls_plot_baseline_all %>%
+                      ggpubr::annotate_figure(top = ggpubr::text_grob("Baseline",size=20,face = "bold",hjust=3.2))
+
+
+vi_pls_plot_followup_label <- vi_pls_plot_followup_all %>%
+                    ggpubr::annotate_figure(top = ggpubr::text_grob("Followup",size=20,face = "bold",hjust=3))
+
+
+
+vi_pls_plot_label <- ggpubr::ggarrange(vi_pls_plot_baseline_label,vi_pls_plot_followup_label,nrow = 2)
+
+title_vi_pls_plot <- ggpubr::annotate_figure(vi_pls_plot_label,
+                        top = ggpubr::text_grob("Feature importance of Partial Least Squares Regressions Predicting Cognitive \nAbilities from Social-Demographics, Lifestyles and Developments Variables",size=25, face = "bold")) 
+
+title_vi_pls_plot
+
+
+
+```
+Change the order of the followup plots
+
+```{r}
+
+
+### get the variable order from the first component:
+comp_plots_baseline_followup <- purrr::pmap(list(tidy_all_data_final_fit_followup_list[1:all_data_param_followup],
+                                     var_explained_followup[1:all_data_param_followup],
+                                     comp_idx_vec_followup[1:all_data_param_followup]
+                                     ),~pls_vi_plot_no_label(data_input=..1,
+                                   var_input = ..2,
+                                   idx_input = ..3,
+                                   reorder_name=tidy_all_data_final_fit_baseline_reordered)) 
+comp_plots_combined_baseline_followup <- ggpubr::ggarrange(plotlist=comp_plots_baseline_followup,
+                                                        nrow =1,ncol = length(var_explained_followup))
+
+comp_plots_combined_baseline_followup
+
+```
+
+
+
+```{r}
+
+corr_followup_baseline_all_sites_names_for_all <-corr_followup_all_sites_names%>%
+     mutate(plotting_name = as.factor(plotting_name))%>%
+                  mutate(plotting_name = factor(plotting_name,
+                                                levels =tidy_all_data_final_fit_baseline_reordered))
+  
+  
+corr_bar_plot_followup_baseline <-   corr_followup_baseline_all_sites_names_for_all%>%
+ #mutate(plotting_name = fct_reorder(plotting_name, value,.fun = "max"))%>%
+  ggplot(aes(x = plotting_name, y = value))+
+    geom_bar(stat = "identity",fill="gray40",alpha = 0.7)+
+    geom_errorbar( aes(x=plotting_name, 
+                   ymin=low, 
+                   ymax=upp),
+               width=0.4, colour="black", alpha=0.9, linewidth=1.3)+
+  scale_y_continuous(limits = c(-0.35, 0.45),
+         breaks = c(-0.35,0, 0.45))+##use this because all the plots should have the same height
+      coord_flip()+
+    theme_classic() + 
+    labs(title = "Univariate \ncorrelations")+
+theme(
+  axis.title.x = element_blank(),
+  axis.text.x = element_text(size = 12,angle = 60,vjust = 0.5),
+  axis.title.y = element_blank(),
+  axis.text.y = element_blank(),
+  legend.text = element_blank(),
+  plot.title = element_text(size=15),
+  axis.ticks = element_blank())
+
+
+```
+
+
+## join correlation plot with univariate together
+
+```{r,fig.width=10,fig.height=9}
+
+vi_pls_plot_followup_baseline_all <-gridExtra::grid.arrange(comp_plots_combined_baseline_followup,
+                                                   corr_bar_plot_followup_baseline,
+                                                   nrow = 1, ncol = 2, widths = c(8, 1.4)) 
+vi_pls_plot_followup_baseline_all
+```
+
+
+
+
+```{r,fig.width=30,fig.height=20}
+
+
+vi_pls_plot_baseline_no_label <- vi_pls_plot_baseline_all %>%
+                            ggpubr::annotate_figure(top = ggpubr::text_grob("Baseline",size=20,hjust=2.5))
+
+
+vi_pls_plot_followup_no_label <- vi_pls_plot_followup_baseline_all %>%
+                            ggpubr::annotate_figure(top = ggpubr::text_grob("Followup",size=20,hjust=2.5))
+
+
+
+vi_pls_plot_label <- ggpubr::ggarrange(vi_pls_plot_baseline_no_label,vi_pls_plot_followup_no_label,ncol = 2,widths = c(1.5,1))
+
+title_vi_pls_plot <- ggpubr::annotate_figure(vi_pls_plot_label,
+                        top = ggpubr::text_grob("Feature importance of Partial Least Squares Regressions \nPredicting Cognitive Abilities from Social-Demographics, \nLifestyles and Developments Variables",size=25, face = "bold")) 
+
+title_vi_pls_plot
+
+
+
+```
+
+
+
+
+
+
+
+
+
+### save the output
+
+```{r}
+
+output_list <- list(baseline_train_pred = ses_pls_pred_baseline_train,
+                    baseline_test_pred = ses_pls_pred_baseline,
+                    baseline_train_data = processed_ses_baseline_train,
+                    baseline_test_data = processed_ses_baseline_test,
+                    followup_train_pred = ses_pls_pred_followup_train,
+                    followup_test_pred = ses_pls_pred_followup,
+                    followup_train_data =processed_ses_followup_train ,
+                    followup_test_data = processed_ses_followup_test)
+
+```
+
+
+
+```{r,eval=FALSE}
+saveRDS(output_list,paste0(scriptfold,'genetics_psychopathology_common_scan_all_scripts/ses_pls_pred', '.RData'))
+
+```
+
+
+save the metrics
+
+```{r}
+ses_baseline_metric_outout_table <- ses_baseline_metric_avg_table %>% mutate(event = "baseline")
+
+
+ses_followup_metric_output_table<- ses_followup_metric_avg_table %>% mutate(event = "followup")
+
+output_table <- bind_rows(ses_baseline_metric_outout_table,ses_followup_metric_output_table)%>%
+                mutate(modality = "Social Demo Lifestyle Dev")
+```
+
+
+```{r}
+
+saveRDS(output_table,paste0(scriptfold,'Common_psy_gene_brain_all/saved_outputs/performance_metrics/ses_performance_metric', '.RData'))
+
+```
