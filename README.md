@@ -1,6 +1,6 @@
 # Commonality-analysis-ABCD4.0
 
- It is assumed that the readers of the codes have ABCD data tables from the internet. So all of R codes start at processing the raw tables downloaded from ABCD webpage
+ It is assumed that the readers of the codes have ABCD data tables from the internet. So all of the R codes start by processing the raw tables downloaded from ABCD webpage
 
 
 
